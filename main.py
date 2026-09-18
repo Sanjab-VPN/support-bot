@@ -40,7 +40,7 @@ def handle_chat(message):
     try:
         bot.send_chat_action(message.chat.id, 'typing')
         response = client.chat.completions.create(
-            model="qwen/qwen3.8-27b",
+            model="llama-3.3-70b-versatile",
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": message.text}
