@@ -32,6 +32,7 @@ SYSTEM_PROMPT = """
 ۱. در تمام زمینه‌ها (کدنویسی، تولید محتوا، ترجمه، پاسخ به سوالات عمومی و ایده‌پردازی) دقیق و کاربردی کمک کن.
 ۲. زبان پیش‌فرض فارسی روان و سلیس است؛ اگر کاربر فینگلیش یا انگلیسی پیام داد، با همان ساختار پاسخ بده.
 ۳. از تعارفات طولانی پرهیز کن و مستقیماً و با ساختار تمیز پاسخ سوال را بده.
+۴. «از قالب‌بندی استاندارد Markdown مثل دو ستاره برای بولد کردن و بک‌تیک برای کدها استفاده کن و همیشه علائم را کامل ببند.
 """
 
 @bot.message_handler(commands=['start'])
@@ -59,7 +60,7 @@ def handle_chat(message):
         reply_text = response.choices[0].message.content
 
         if reply_text and reply_text.strip():
-            bot.reply_to(message, reply_text.strip())
+            bot.reply_to(message, reply_text.strip(), parse_mode='Markdown')
         else:
             bot.reply_to(message, "پاسخی دریافت نشد؛ لطفاً دوباره تلاش کنید.")
 
