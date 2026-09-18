@@ -20,7 +20,7 @@ def run_web():
 
 threading.Thread(target=run_web, daemon=True).start()
 
-# ۲. دریافت متغیرها از رندر
+# ۲. فراخوانی متغیرها از رندر
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
@@ -30,7 +30,7 @@ ALLOWED_USERS = [int(uid.strip()) for uid in ALLOWED_USERS_RAW.split(",") if uid
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 client = Groq(api_key=GROQ_API_KEY)
 
-# ۳. حافظه و وضعیت چت‌ها
+# ۳. مدیریت حافظه و وضعیت چت‌ها
 chat_memory = {}
 memory_status = {}
 
@@ -39,33 +39,33 @@ def is_authorized(user_id):
         return True
     return user_id in ALLOWED_USERS
 
-# ۴. پرامپت سیستمی حاوی لیست دستورات و قوانین تلگرام
+# ۴. پرامپت سیستمی و دستورات
 SYSTEM_PROMPT = """
 تو یک دستیار هوش مصنوعی شخصی، سریع، دقیق و مسلط به تمام زمینه‌ها هستی.
-تو در بستر یک ربات تلگرام در حال مکالمه هستی.
+تو در بستر پیام‌رسان تلگرام با کاربر گفتگو می‌کنی.
 
-دستورات فعال در ربات:
-اگر کاربر درباره دستورات، فرامین یا تنظیمات پرسید، دقیقاً این دستورات را معرفی کن:
-- /help : نمایش لیست دستورات و راهنما
-- /memory_on : فعال‌سازی حافظه پیوسته مکالمه
-- /memory_off : غیرفعال‌سازی حافظه و بررسی مستقل هر پیام
-- /clear : پاک کردن تاریخچه مکالمه فعلی
-- /start : شروع و بازنشانی ربات
+دستورات فعال در بات:
+اگر کاربر درباره دستورات، امکانات یا فرامین ربات پرسید، دقیقاً این موارد را معرفی کن:
+- /help : نمایش راهنمای کامل
+- /memory_on : فعال‌سازی حافظه پیوسته
+- /memory_off : غیرفعال کردن حافظه و پردازش مستقل
+- /clear : پاکسازی تاریخچه مکالمه فعلی
+- /start : بررسی وضعیت و شروع مجدد
 
-قوانین نگارشی و فرمت:
-۱. در موضوعات عمومی، کدنویسی، تحلیل، ترجمه و تولید محتوا دقیق و بدون حاشیه پاسخ بده.
-۲. تحت هیچ شرایطی از فرمت LaTeX و نماد دلار ($) استفاده نکن و فرمول‌ها را ساده بنویس (مانند: ۱۵ × ۴۲ = ۶۳۰).
-۳. زبان پیش‌فرض فارسی سلیس است، مگر کاربر انگلیسی یا فینگلیش بنویسد.
+قوانین نگارشی:
+۱. پاسخ‌ها سریع، بدون حاشیه و مستقیم به اصل موضوع باشند.
+۲. تحت هیچ شرایطی از فرمت LaTeX و علامت دلار ($) استفاده نکن؛ تمام فرمول‌ها و محاسبات را به صورت متن ساده بنویس (مثال: ۱۵ × ۴۲ = ۶۳۰).
+۳. زبان پیش‌فرض فارسی سلیس است، مگر اینکه کاربر به زبان دیگری پیام بدهد.
 """
 
 HELP_TEXT = """
-🤖 <b>راهنمای دستورات دستیار هوشمند:</b>
+🤖 <b>راهنمای دستورات دستیار شخصی:</b>
 
 • /help : نمایش همین راهنما
-• /start : راه‌اندازی ربات
-• /memory_on : فعال‌سازی حافظه گفتگو
-• /memory_off : خاموش کردن حافظه (صرفه‌جویی در مصرف توکن)
-• /clear : پاک کردن تاریخچه فعلی
+• /start : بررسی وضعیت و شروع ربات
+• /memory_on : فعال‌سازی حافظه (به خاطر سپردن گفتگوها)
+• /memory_off : غیرفعال‌سازی حافظه (پاسخ‌های مستقل و صرفه‌جویی در توکن)
+• /clear : پاکسازی سابقه گفتگوی فعلی
 """
 
 @bot.message_handler(commands=['start'])
@@ -73,11 +73,18 @@ def send_welcome(message):
     if not is_authorized(message.from_user.id):
         return
 
-    chat_memory[message.chat.id] = []
-    memory_status[message.chat.id] = True
+    chat_id = message.chat.id
+    chat_memory[chat_id] = []
+    
+    # حفظ تنظیم قبلی کاربر و جلوگیری از ریست شدن حالت خاموش
+    if chat_id not in memory_status:
+        memory_status[chat_id] = True
+
+    state_text = "فعال است" if memory_status[chat_id] else "غیرفعال است"
+
     welcome_text = (
-        "سلام! دستیار پرسرعت شخصی شما آماده است.\n\n"
-        "وضعیت فعلی: <b>حافظه فعال است</b>.\n\n"
+        f"سلام! دستیار شخصی شما آماده است.\n\n"
+        f"وضعیت فعلی: <b>حافظه {state_text}</b>.\n\n"
         + HELP_TEXT
     )
     bot.reply_to(message, welcome_text, parse_mode='HTML')
@@ -93,7 +100,7 @@ def enable_memory(message):
     if not is_authorized(message.from_user.id):
         return
     memory_status[message.chat.id] = True
-    bot.reply_to(message, "✅ <b>حافظه فعال شد.</b> سوابق پیام‌ها ذخیره می‌شود.", parse_mode='HTML')
+    bot.reply_to(message, "✅ <b>حافظه فعال شد.</b> پیام‌های قبلی ذخیره و پیگیری می‌شوند.", parse_mode='HTML')
 
 @bot.message_handler(commands=['memory_off'])
 def disable_memory(message):
@@ -101,7 +108,7 @@ def disable_memory(message):
         return
     memory_status[message.chat.id] = False
     chat_memory[message.chat.id] = []
-    bot.reply_to(message, "❌ <b>حافظه غیرفعال شد.</b> هر پیام به صورت مستقل پردازش می‌شود.", parse_mode='HTML')
+    bot.reply_to(message, "❌ <b>حافظه غیرفعال شد.</b> تمام پیام‌ها مستقل و بدون تاریخچه پردازش می‌شوند.", parse_mode='HTML')
 
 @bot.message_handler(commands=['clear'])
 def clear_history(message):
@@ -121,19 +128,21 @@ def handle_chat(message):
 
         is_memory_active = memory_status.get(chat_id, True)
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M")
-        full_system = f"{SYSTEM_PROMPT}\nاطلاعات سیستمی: زمان فعلی سرور: {current_time}"
+        full_system = f"{SYSTEM_PROMPT}\nاطلاعات سیستمی: زمان سرور: {current_time}"
 
         if is_memory_active:
             if chat_id not in chat_memory:
                 chat_memory[chat_id] = []
-            
+
             chat_memory[chat_id].append({"role": "user", "content": message.text})
-            
+
+            # نگهداری حداکثر ۶ پیام آخر (۳ سوال و ۳ جواب)
             if len(chat_memory[chat_id]) > 6:
                 chat_memory[chat_id] = chat_memory[chat_id][-6:]
-                
+
             payload_messages = [{"role": "system", "content": full_system}] + chat_memory[chat_id]
         else:
+            # حالت تک‌پاسخی بدون بارگذاری تاریخچه
             payload_messages = [
                 {"role": "system", "content": full_system},
                 {"role": "user", "content": message.text}
@@ -151,7 +160,7 @@ def handle_chat(message):
         if reply_text and reply_text.strip():
             raw_text = reply_text.strip()
 
-            # تبدیل خودکار مارک‌داون به تگ‌های رسمی HTML تلگرام
+            # تبدیل عبارات مارک‌داون به تگ‌های HTML معتبر تلگرام
             formatted_text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', raw_text)
             formatted_text = re.sub(r'```(.*?)```', r'<pre>\1</pre>', formatted_text, flags=re.DOTALL)
             formatted_text = re.sub(r'`(.*?)`', r'<code>\1</code>', formatted_text)
@@ -162,14 +171,13 @@ def handle_chat(message):
             try:
                 bot.reply_to(message, formatted_text, parse_mode='HTML')
             except ApiTelegramException:
-                # سوپاپ اطمینان: ارسال متن خام در صورت ناسازگاری تگ‌ها
                 bot.reply_to(message, raw_text)
         else:
-            bot.reply_to(message, "پاسخی دریافت نشد؛ لطفاً مجدداً سوال خود را بفرستید.")
+            bot.reply_to(message, "پاسخی دریافت نشد؛ لطفاً مجدداً بپرسید.")
 
     except Exception as e:
         print(f"Error details: {e}")
-        bot.reply_to(message, "در پردازش پیام خطایی رخ داد؛ لطفاً چند لحظه دیگر امتحان کنید.")
+        bot.reply_to(message, "در پردازش پیام مشکلی رخ داد؛ لطفاً چند لحظه بعد تلاش کنید.")
 
-print("ربات با هوش اصلاح‌شده و پردازش استایل تلگرام آماده است...")
+print("ربات با امکانات کامل و حافظه پایدار فعال شد...")
 bot.infinity_polling()
