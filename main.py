@@ -136,8 +136,8 @@ def handle_chat(message):
 
             chat_memory[chat_id].append({"role": "user", "content": message.text})
 
-            # نگهداری حداکثر ۶ پیام آخر (۳ سوال و ۳ جواب)
-            if len(chat_memory[chat_id]) > 6:
+            # نگهداری حداکثر ۱۰ پیام آخر (۵ سوال و ۵ جواب)
+            if len(chat_memory[chat_id]) > 10:
                 chat_memory[chat_id] = chat_memory[chat_id][-6:]
 
             payload_messages = [{"role": "system", "content": full_system}] + chat_memory[chat_id]
@@ -151,7 +151,7 @@ def handle_chat(message):
         response = client.chat.completions.create(
             model="qwen/qwen3.8-27b",
             messages=payload_messages,
-            temperature=0.6,
+            temperature=0.3,
             max_tokens=800
         )
 
