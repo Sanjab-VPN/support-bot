@@ -4,7 +4,7 @@ from flask import Flask
 import telebot
 from groq import Groq
 
-# ۱. وب‌سرور خیلی سبک فقط برای اینکه رندر سرویس را فعال نگه دارد
+# ۱. وب‌سرور سبک برای فعال ماندن در سرویس رندر
 app = Flask(__name__)
 
 @app.route('/')
@@ -17,7 +17,7 @@ def run_web():
 
 threading.Thread(target=run_web, daemon=True).start()
 
-# ۲. خواندن توکن‌ها از محیط امن رندر
+# ۲. فراخوانی امن توکن‌ها از محیط رندر
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
@@ -49,10 +49,11 @@ def handle_chat(message):
             max_tokens=250
         )
         bot.reply_to(message, response.choices[0].message.content)
+
     except Exception as e:
         print(f"Error: {e}")
-        bot.reply_to(message, "کمی سرم شلوغه! لطفاً مجدداً امتحان کنید.")
+        # ارسال علت دقیق ارور در تلگرام جهت عیب‌یابی سریع
+        bot.reply_to(message, f"علت خطا:\n{e}")
 
 print("ربات در حال اجراست...")
 bot.infinity_polling()
-
