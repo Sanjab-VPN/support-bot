@@ -4,3 +4,4 @@ groq
 google-genai
 ddgs
 requests
+tavily-python
