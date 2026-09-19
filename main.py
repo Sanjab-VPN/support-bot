@@ -12,12 +12,12 @@ from groq import Groq
 from google import genai
 from google.genai import types
 
-# ۱. وب‌سرور سبک برای زنده نگه‌داشتن ربات روی رندر
+# ۱. وب‌سرور سبک جهت زنده نگه‌داشتن سرویس در رندر
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Personal AI Assistant is Online and Healthy!"
+    return "Personal AI Assistant is Online & Active!"
 
 def run_web():
     port = int(os.environ.get("PORT", 8080))
@@ -38,6 +38,7 @@ bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
+# ۳. مدل‌ها و مدیریت وضعیت کاربران
 MODEL_FAST = "qwen/qwen3.8-27b"
 MODEL_SMART = "openai/gpt-oss-120b"
 MODEL_GEMINI = "gemini-3.5-flash-lite"
@@ -52,22 +53,22 @@ def is_authorized(user_id):
         return True
     return user_id in ALLOWED_USERS
 
-# ۳. پرامپت‌ها
+# ۴. پرامپت‌های سیستمی
 BASE_SYSTEM_PROMPT = """
-تو یک دستیار هوش مصنوعی شخصی، متصل به اینترنت، باهوش و بسیار صریح هستی که در تلگرام پاسخ می‌دهی.
+تو یک دستیار هوش مصنوعی شخصی، سریع، متصل به اینترنت، باهوش و بسیار صریح هستی که در تلگرام پاسخ می‌دهی.
 
 قوانین کاری:
-۱. اگر اطلاعات زنده وب در متن سوال برایت ارسال شده بود، مستقیماً به آن استناد کن و آخرین فکت‌ها، قیمت‌ها و اخبار را بگو.
-۲. اگر اطلاعات وب موجود نبود، از دانش درونی خودت پاسخ بده اما برای افراد و حوادث روز حدس نزن.
-۳. تحت هیچ شرایطی جملاتی مثل "در نتایج وب یافت نشد" یا "بر اساس نتایج وب" را تکرار نکن؛ مثل یک انسان مطلع و طبیعی جواب بده.
-۴. استفاده از فرمت LaTeX و علامت دلار ($) اکیداً ممنوع است. تمام ارقام و محاسبات ریاضی را به صورت متن ساده بنویس.
+۱. اگر اطلاعات زنده وب در اختیارت قرار گرفت، مستقیماً به آن استناد کن و آخرین فکت‌ها، قیمت‌ها و اخبار را بگو.
+۲. اگر اطلاعات وب ضمیمه نشده بود، با دانش درونی خودت پاسخ بده اما برای افراد و حوادث روز حدس نزن.
+۳. تحت هیچ شرایطی جملاتی مثل "در نتایج وب یافت نشد" یا "بر اساس داده‌های وب" را تکرار نکن؛ کاملاً طبیعی و مثل یک انسان مطلع جواب بده.
+۴. استفاده از فرمت LaTeX و علامت دلار ($) اکیداً ممنوع است؛ تمام فرمول‌ها و اعداد را به صورت متن ساده بنویس.
 ۵. زبان پیش‌فرض فارسی سلیس است.
 """
 
 EXAM_SYSTEM_PROMPT = """
-دستورالعمل آزمون زبان انگلیسی:
+دستورالعمل آزمون زبان انگلیسی (Autonomous English Exam Protocol):
 پاسخ قطعی، بدون معطلی و تک‌گزینه‌ای برای پر کردن پاسخ‌نامه.
-قالب سطر آخر: RESULT: [Correct Word] -> [Option Letter]
+قالب سطر آخر (اجباری): RESULT: [Correct Word] -> [Option Letter]
 """
 
 HELP_TEXT = """
@@ -76,37 +77,97 @@ HELP_TEXT = """
 <b>موتورهای هوش مصنوعی:</b>
 • /fast : فوق‌سریع Qwen (کارهای روزمره و کدنویسی)
 • /smart : فوق‌هوشمند 120B (استدلال سنگین و تست)
-• /gemini : مدل Gemini متصل به وب زنده (قیمت دلار، طلا، اخبار و بیوگرافی‌ها)
+• /gemini : مدل هوشمند متصل به وب زنده (Gemini Web)
 
 <b>ابزارهای وب:</b>
-• <code>/web متن</code> : استعلام تکی از اینترنت
-• <code>/testweb عبارت</code> : تست مستقیم و مشاهده خروجی خام موتور جستجو
+• <code>/web متن</code> یا <code>/search متن</code> : استعلام فوری از وب
+• <code>/testweb عبارت</code> : تست خروجی خام موتور جستجو برای عیب‌یابی
 
 <b>مدیریت حافظه:</b>
 • /memory_on : فعال‌سازی حافظه
 • /memory_off : غیرفعال‌سازی حافظه
-• /clear : پاکسازی تاریخچه مکالمه فعلی
+• /clear : پاکسازی سابقه مکالمه جاری
 """
 
-# ۴. موتور جستجوی هوشمند و ضد تحریم
+# ۵. سیستم هوشمند فیلتر و واکشی وب (صرفه‌جویی در سهمیه Tavily)
+def should_search_web(text):
+    """تشخیص دقیق نیاز به وب‌سرچ برای جلوگیری از هدررفت سهمیه ۱۰۰۰تایی Tavily"""
+    clean = text.strip().lower()
+
+    # ۱. اگر کاربر صراحتاً دستور جستجو داد، حتماً سرچ کن
+    explicit_search_commands = [
+        'سرچ کن', 'جستجو کن', 'گوگل کن', 'بگرد', 'پیدا کن', 'توی نت ببین',
+        'تو نت ببین', 'سرچ بزن', 'search', 'سرچ', 'جستجو'
+    ]
+    if any(cmd in clean for cmd in explicit_search_commands):
+        return True
+
+    # ۲. پیام‌های احوال‌پرسی، تعارفات یا تایید ساده هرگز نباید سرچ شوند
+    greetings = [
+        'سلام', 'درود', 'خوبی', 'چطوری', 'چه خبر', 'مرسی', 'ممنون', 'تشکر',
+        'دمت گرم', 'دستت درد نکنه', 'قربونت', 'فدات', 'خسته نباشی', 'صبح بخیر',
+        'شب بخیر', 'عصر بخیر', 'روز بخیر', 'hi', 'hello', 'hey', 'thanks',
+        'thx', 'ok', 'اوکی', 'باشه', 'آره', 'نه', 'درسته', 'خوب', 'عالیه',
+        'اسمت چیه', 'تو کی هستی', 'کی هستی', 'who are you'
+    ]
+    if clean in greetings or len(clean) < 4:
+        return False
+
+    # ۳. فکت‌های زنده، مالی، حوادث، اشخاص و اخبار
+    live_triggers = [
+        # بازار مالی و ارز
+        'قیمت', 'نرخ', 'چنده', 'چند شده', 'دلار', 'یورو', 'ارز', 'طلا', 'سکه',
+        'بورس', 'تومان', 'ریال', 'بیت‌کوین', 'بیت کوین', 'اتریوم', 'کریپتو',
+        'سهام', 'ارز دیجیتال', 'ماشین', 'خودرو', 'پراید',
+        # اخبار و زمان حال
+        'اخبار', 'خبر', 'آخرین', 'جدیدترین', 'امروز', 'الان', 'دیشب', 'امشب',
+        'فردا', 'این روزها', 'تازه', 'رویداد', 'اتفاق', 'چیشد', 'چی شد',
+        'چیکار کرد', 'چه خبر از', 'اوضاع',
+        # وضعیت افراد و اشخاص
+        'کیه', 'کیست', 'کجاست', 'وضعیت', 'حالش', 'سلامت', 'بیمارستان', 'تصادف',
+        'فوت', 'درگذشت', 'زنده‌ست', 'زنده است', 'دستگیر', 'بازداشت',
+        'چند سالشه', 'متولد', 'همسر', 'زنِ', 'شوهرِ', 'بیوگرافی',
+        # ورزش، بازی‌ها و آب‌وهوا
+        'نتیجه بازی', 'فوتبال', 'گل زد', 'بازی دیشب', 'بازی امروز', 'جدول لیگ',
+        'هواشناسی', 'آب و هوا', 'هوا چطوره', 'بارش', 'دما',
+        # تاریخ و زمان انتشار محصولات/تکنولوژی
+        'تاریخ انتشار', 'تاریخ عرضه', 'کی میاد', 'رونمایی', 'معرفی شد'
+    ]
+    return any(word in clean for word in live_triggers)
+
+def clean_query_for_search(text):
+    """پاکسازی ضمایر، افعال عامیانه و دستورات سرچ برای بدست آوردن کلیدواژه خالص"""
+    cleaned = re.sub(r'[؟?!\.,]', '', text)
+    remove_words = [
+        'سرچ کن ببین', 'لطفا سرچ کن', 'سرچ کن', 'جستجو کن', 'گوگل کن', 'بگرد',
+        'سرچ', 'جستجو', 'چیشده', 'چی شده', 'کیه', 'کیست', 'کجاست', 'چیکار کرده',
+        'چه خبر از', 'چه خبر', 'حالش چطوره', 'درباره', 'در مورد', 'قیمت امروز', 'آخرین'
+    ]
+    for word in remove_words:
+        cleaned = cleaned.replace(word, '')
+    cleaned = cleaned.strip()
+    return cleaned if cleaned else text
+
 def fetch_web_context(query):
+    """جستجوی زنده با اولویت Tavily و سوپاپ اطمینان Google News RSS"""
+    search_term = clean_query_for_search(query)
     snippets = []
 
-    # لایه ۱: سرویس Tavily (در صورت وجود کلید)
+    # لایه ۱: Tavily Search API
     if TAVILY_API_KEY:
         try:
             url = "https://api.tavily.com/search"
             payload = {
                 "api_key": TAVILY_API_KEY,
-                "query": query,
+                "query": search_term,
                 "search_depth": "basic",
                 "max_results": 4
             }
-            res = requests.post(url, json=payload, timeout=8)
+            res = requests.post(url, json=payload, timeout=7)
             if res.status_code == 200:
                 data = res.json()
                 if "answer" in data and data["answer"]:
-                    snippets.append(f"• خلاصه: {data['answer']}")
+                    snippets.append(f"• پاسخ سریع وب: {data['answer']}")
                 for r in data.get("results", []):
                     snippets.append(f"• {r.get('title', '')}: {r.get('content', '')}")
                 if snippets:
@@ -114,43 +175,44 @@ def fetch_web_context(query):
         except Exception as e:
             print(f"Tavily Error: {e}")
 
-    # لایه ۲: فید Google News با شبیه‌سازی مرورگر واقعی
+    # لایه ۲: Google News RSS (با هدر واقعی مرورگر)
     try:
-        clean_q = re.sub(r'[؟?!\.,]', '', query).strip()
-        encoded_query = urllib.parse.quote(clean_q)
+        encoded_query = urllib.parse.quote(search_term)
         rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=fa&gl=IR&ceid=IR:fa"
-        
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             "Accept-Language": "fa,en;q=0.9"
         }
-        resp = requests.get(rss_url, headers=headers, timeout=6)
+        resp = requests.get(rss_url, headers=headers, timeout=5)
         if resp.status_code == 200:
             root = ET.fromstring(resp.content)
-            for item in root.findall('./channel/item')[:4]:
+            for item in root.findall('./channel/item')[:3]:
                 title = item.find('title').text if item.find('title') is not None else ""
                 desc = item.find('description').text if item.find('description') is not None else ""
                 clean_desc = re.sub('<[^<]+?>', '', desc)
-                snippets.append(f"• {title}: {clean_desc}")
+                snippets.append(f"• خبر: {title} - {clean_desc}")
     except Exception as e:
-        print(f"Google News Scraper Error: {e}")
+        print(f"Google News RSS Error: {e}")
 
     return "\n".join(snippets)
 
 def reply_formatted(message, text):
+    """ارسال متن با تبدیل تگ‌های Markdown به HTML مجاز تلگرام"""
     if not text or not text.strip():
         bot.reply_to(message, "پاسخی دریافت نشد.")
         return
+
     clean = text.strip()
     formatted = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', clean)
     formatted = re.sub(r'```(.*?)```', r'<pre>\1</pre>', formatted, flags=re.DOTALL)
     formatted = re.sub(r'`(.*?)`', r'<code>\1</code>', formatted)
+    
     try:
         bot.reply_to(message, formatted, parse_mode='HTML')
     except ApiTelegramException:
         bot.reply_to(message, clean)
 
-# ۵. دستورات تلگرام
+# ۶. دستورات تلگرام
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     if not is_authorized(message.from_user.id):
@@ -161,7 +223,7 @@ def send_welcome(message):
     user_model.setdefault(chat_id, MODEL_FAST)
     exam_mode_status.setdefault(chat_id, False)
 
-    bot.reply_to(message, f"سلام! ربات آماده است.\nموتور فعال: <b>{user_model[chat_id]}</b>\nبرای اتصال به وب دستور /gemini را بزنید.\n\n" + HELP_TEXT, parse_mode='HTML')
+    bot.reply_to(message, f"سلام! دستیار آماده است.\nموتور فعال: <b>{user_model[chat_id]}</b>\nبرای اتصال به وب دستور /gemini را بزنید.\n\n" + HELP_TEXT, parse_mode='HTML')
 
 @bot.message_handler(commands=['help'])
 def send_help(message):
@@ -174,7 +236,7 @@ def switch_fast(message):
     if not is_authorized(message.from_user.id):
         return
     user_model[message.chat.id] = MODEL_FAST
-    reply_formatted(message, "⚡️ <b>مدل فوق‌سریع فعال شد.</b>")
+    reply_formatted(message, "⚡️ <b>مدل فوق‌سریع Qwen فعال شد.</b>")
 
 @bot.message_handler(commands=['smart'])
 def switch_smart(message):
@@ -188,7 +250,21 @@ def switch_gemini(message):
     if not is_authorized(message.from_user.id):
         return
     user_model[message.chat.id] = MODEL_GEMINI
-    reply_formatted(message, "🌐 <b>مدل Gemini متصل به وب فعال شد.</b> تمام سوالات با اطلاعات زنده اینترنت بررسی می‌شوند.")
+    reply_formatted(message, "🌐 <b>مدل Gemini متصل به وب زنده فعال شد.</b>")
+
+@bot.message_handler(commands=['exam_on'])
+def enable_exam_mode(message):
+    if not is_authorized(message.from_user.id):
+        return
+    exam_mode_status[message.chat.id] = True
+    reply_formatted(message, "🎯 <b>حالت آزمون فعال شد.</b> خروجی تک‌گزینه‌ای و قطعی.")
+
+@bot.message_handler(commands=['exam_off'])
+def disable_exam_mode(message):
+    if not is_authorized(message.from_user.id):
+        return
+    exam_mode_status[message.chat.id] = False
+    reply_formatted(message, "⚪️ <b>حالت آزمون غیرفعال شد.</b>")
 
 @bot.message_handler(commands=['testweb'])
 def test_web(message):
@@ -200,7 +276,7 @@ def test_web(message):
     if data:
         reply_formatted(message, f"🔍 <b>داده‌های واکشی‌شده از وب:</b>\n\n{data[:2000]}")
     else:
-        reply_formatted(message, "❌ موتور وب‌سرچ پاسخی برنگرداند. (توصیه می‌شود متغیر TAVILY_API_KEY را در رندر اضافه کنید).")
+        reply_formatted(message, "❌ موتور جستجو نتیجه‌ای نیاورد.")
 
 @bot.message_handler(commands=['web', 'search'])
 def handle_quick_search(message):
@@ -247,7 +323,7 @@ def disable_memory(message):
     chat_memory[message.chat.id] = []
     reply_formatted(message, "❌ حافظه غیرفعال شد.")
 
-# ۶. پردازش پیام‌های عمومی
+# ۷. مدیریت پیام‌های عمومی
 @bot.message_handler(func=lambda message: True)
 def handle_chat(message):
     if not is_authorized(message.from_user.id):
@@ -262,10 +338,18 @@ def handle_chat(message):
 
     try:
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M")
-        sys_prompt = f"{BASE_SYSTEM_PROMPT}\nزمان فعلی سرور: {current_time}"
+        sys_prompt = BASE_SYSTEM_PROMPT
+        if exam_mode_status.get(chat_id, False):
+            sys_prompt += f"\n\n{EXAM_SYSTEM_PROMPT}"
+        sys_prompt += f"\nزمان فعلی سرور: {current_time}"
 
+        # مسیر Gemini متصل به وب با فیلتر هوشمند
         if selected_model == MODEL_GEMINI:
-            web_info = fetch_web_context(user_text)
+            web_info = ""
+            # فقط در صورت تشخیص نیاز واقعی، سهمیه Tavily مصرف می‌شود
+            if should_search_web(user_text):
+                web_info = fetch_web_context(user_text)
+
             enriched_text = f"{user_text}\n\n[داده‌های زنده وب]:\n{web_info}" if web_info else user_text
 
             gemini_contents = []
@@ -294,8 +378,8 @@ def handle_chat(message):
 
             reply_formatted(message, ans)
 
+        # مسیر مدل‌های Groq (Fast و Smart)
         else:
-            # مدل‌های Groq
             if is_mem:
                 if chat_id not in chat_memory:
                     chat_memory[chat_id] = []
@@ -310,7 +394,7 @@ def handle_chat(message):
                 model=selected_model,
                 messages=messages,
                 temperature=0.2,
-                max_tokens=800
+                max_tokens=1500 if selected_model == MODEL_SMART else 800
             )
             ans = resp.choices[0].message.content.strip()
 
@@ -323,5 +407,5 @@ def handle_chat(message):
         print(f"Chat Error: {e}")
         reply_formatted(message, "در پردازش مشکلی رخ داد؛ لطفاً دوباره تلاش کنید.")
 
-print("ربات با موتور جستجوی ضد تحریم و جمینای فعال شد...")
+print("ربات با فیلتر هوشمند وب‌سرچ و صرفه‌جویی سهمیه آماده به کار است...")
 bot.infinity_polling()
