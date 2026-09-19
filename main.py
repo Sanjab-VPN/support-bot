@@ -1,8 +1,11 @@
 import os
 import re
 import threading
+import urllib.parse
+import xml.etree.ElementTree as ET
 from datetime import datetime
 from flask import Flask
+import requests
 import telebot
 from telebot.apihelper import ApiTelegramException
 from groq import Groq
@@ -14,7 +17,7 @@ try:
 except ImportError:
     from duckduckgo_search import DDGS
 
-# ۱. وب‌سرور سبک برای زنده نگه‌داشتن سرویس در رندر
+# ۱. وب‌سرور سبک برای زنده نگه‌داشتن سرویس روی رندر
 app = Flask(__name__)
 
 @app.route('/')
@@ -39,7 +42,7 @@ bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
-# ۳. مدل‌ها و وضعیت چت‌ها
+# ۳. مدل‌ها و ساختار نگهداری وضعیت کاربران
 MODEL_FAST = "qwen/qwen3.8-27b"
 MODEL_SMART = "openai/gpt-oss-120b"
 MODEL_GEMINI = "gemini-3.5-flash-lite"
@@ -58,7 +61,7 @@ def is_authorized(user_id):
 BASE_SYSTEM_PROMPT = """
 تو یک دستیار هوش مصنوعی شخصی، سریع، صریح و بدون حاشیه هستی که در تلگرام فعالیت می‌کنی.
 
-دستورات بات:
+دستورات فعال در بات:
 - /fast : سوئیچ به مدل فوق‌سریع
 - /smart : سوئیچ به مدل فوق‌هوشمند (120B)
 - /gemini : سوئیچ به مدل زنده متصل به اینترنت (Gemini Web)
@@ -71,8 +74,8 @@ BASE_SYSTEM_PROMPT = """
 
 قوانین عمومی:
 ۱. پاسخ‌ها مستقیم، بدون تعارف و دقیقاً به اصل موضوع باشند.
-۲. اگر اطلاعات وب در اختیارت قرار گرفت، مستقیماً به آن استناد کن و از توهم پرهیز کن.
-۳. فرمت LaTeX و علامت دلار ($) اکیداً ممنوع است؛ تمام فرمول‌ها را متن ساده بنویس.
+۲. اگر اطلاعات وب در اختیارت قرار گرفت، مستقیماً به آن استناد کن و آخرین اخبار را دقیق بگو؛ حدس نزن و از توهم پرهیز کن.
+۳. فرمت LaTeX و علامت دلار ($) اکیداً ممنوع است؛ تمام فرمول‌ها و عبارات را به صورت متن ساده بنویس.
 ۴. زبان پیش‌فرض فارسی سلیس است.
 """
 
@@ -95,35 +98,66 @@ HELP_TEXT = """
 <b>موتورهای هوش مصنوعی:</b>
 • /fast : مدل فوق‌سریع Qwen (کارهای روزمره و کدنویسی)
 • /smart : مدل فوق‌هوشمند 120B (استدلال سنگین و تحلیلی)
-• /gemini : مدل Gemini 3.5 متصل به وب (اخبار روز و شناخت اشخاص)
+• /gemini : مدل Gemini 3.5 متصل به وب (اخبار روز، شناخت اشخاص و بدون توهم)
 
 <b>جستجوی فوری در وب:</b>
-• <code>/web متن</code> یا <code>/search متن</code> : استعلام زنده از وب بدون تغییر مدل
+• <code>/web متن</code> یا <code>/search متن</code> : استعلام زنده از وب بدون تغییر مدل جاری
+• <code>/testweb نام</code> : مشاهده خروجی خام موتورهای جستجو برای عیب‌یابی
 
 <b>حالت تخصصی آزمون:</b>
-• /exam_on : فعال‌سازی حل تست زبان
+• /exam_on : فعال‌سازی حل تست زبان (خروجی تک‌گزینه‌ای و قطعی)
 • /exam_off : بازگشت به حالت عمومی
 
 <b>مدیریت حافظه:</b>
-• /memory_on : فعال‌سازی حافظه
-• /memory_off : غیرفعال‌سازی حافظه
+• /memory_on : فعال‌سازی حافظه گفتگو
+• /memory_off : غیرفعال‌سازی حافظه (حالت مستقل و سبک)
 • /clear : پاکسازی تاریخچه مکالمه
 """
 
+# ۵. ابزارهای واکشی و جستجوی وب
+def clean_query_for_search(text):
+    """حذف ضمایر و افعال عامیانه برای استخراج کلیدواژه‌های خبری دقیق"""
+    cleaned = re.sub(r'[؟?!\.,]', '', text)
+    slang_words = ['چیشده', 'چی شده', 'کیه', 'کیست', 'کجاست', 'چیکار کرده', 'چه خبر', 'حالش چطوره', 'درباره', 'در مورد']
+    for word in slang_words:
+        cleaned = cleaned.replace(word, '')
+    cleaned = cleaned.strip()
+    return cleaned if cleaned else text
+
 def fetch_web_context(query):
+    """جستجوی ترکیبی: اول DuckDuckGo و در صورت نیاز فید Google News"""
+    search_term = clean_query_for_search(query)
+    snippets = []
+
+    # لایه اول: DuckDuckGo
     try:
         with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=3))
+            results = list(ddgs.text(f"{search_term} اخبار", max_results=3))
             if not results:
-                return ""
-            snippets = [f"• {r.get('title', '')}: {r.get('body', '')}" for r in results]
-            return "\n".join(snippets)
+                results = list(ddgs.text(search_term, max_results=3))
+            for r in results:
+                snippets.append(f"• {r.get('title', '')}: {r.get('body', '')}")
     except Exception as e:
-        print(f"Web search error: {e}")
-        return ""
+        print(f"DDGS Error: {e}")
 
+    # لایه دوم (سوپاپ اطمینان): فید اخبار گوگل
+    if not snippets:
+        try:
+            encoded_query = urllib.parse.quote(search_term)
+            rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=fa&gl=IR&ceid=IR:fa"
+            resp = requests.get(rss_url, timeout=5)
+            if resp.status_code == 200:
+                root = ET.fromstring(resp.content)
+                for item in root.findall('./channel/item')[:3]:
+                    title = item.find('title').text if item.find('title') is not None else ""
+                    snippets.append(f"• خبر: {title}")
+        except Exception as e:
+            print(f"Google News RSS Error: {e}")
+
+    return "\n".join(snippets)
+
+# ۶. تابع ارسال امن پیام با تبدیل تگ‌های HTML
 def reply_formatted(message, text):
-    """ارسال استاندارد و امن پیام با فرمت تلگرام بدون ایجاد خطای ساختاری"""
     if not text or not text.strip():
         bot.reply_to(message, "پاسخی دریافت نشد.")
         return
@@ -138,6 +172,7 @@ def reply_formatted(message, text):
     except ApiTelegramException:
         bot.reply_to(message, clean)
 
+# ۷. دستورات کنترلی تلگرام
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     if not is_authorized(message.from_user.id):
@@ -196,39 +231,7 @@ def switch_to_gemini(message):
     if not is_authorized(message.from_user.id):
         return
     user_model[message.chat.id] = MODEL_GEMINI
-    reply_formatted(message, "🌐 <b>مدل Gemini (متصل به اینترنت) فعال شد.</b>")
-
-@bot.message_handler(commands=['web', 'search'])
-def handle_quick_search(message):
-    if not is_authorized(message.from_user.id):
-        return
-    
-    if not gemini_client:
-        reply_formatted(message, "⚠️ کلید GEMINI_API_KEY در تنظیمات رندر وارد نشده است.")
-        return
-
-    query = message.text.replace('/web', '').replace('/search', '').strip()
-    if not query:
-        reply_formatted(message, "لطفاً متن جستجو را بنویسید:\nمثال: <code>/web قیمت بیت‌کوین امروز</code>")
-        return
-
-    bot.send_chat_action(message.chat.id, 'typing')
-    web_data = fetch_web_context(query)
-    prompt = f"با توجه به اطلاعات زنده وب به سوال پاسخ بده:\n\n[اطلاعات وب]:\n{web_data}\n\nپرسش: {query}"
-    
-    try:
-        response = gemini_client.models.generate_content(
-            model=MODEL_GEMINI,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=BASE_SYSTEM_PROMPT,
-                temperature=0.2,
-                max_output_tokens=800
-            )
-        )
-        reply_formatted(message, response.text)
-    except Exception as e:
-        reply_formatted(message, f"خطا در جستجو: {e}")
+    reply_formatted(message, "🌐 <b>مدل Gemini متصل به وب فعال شد.</b> از این لحظه تمام سوالات از اینترنت بررسی می‌شوند.")
 
 @bot.message_handler(commands=['exam_on'])
 def enable_exam_mode(message):
@@ -266,6 +269,51 @@ def clear_history(message):
     chat_memory[message.chat.id] = []
     reply_formatted(message, "حافظه مکالمه پاک شد.")
 
+@bot.message_handler(commands=['testweb'])
+def test_web(message):
+    if not is_authorized(message.from_user.id):
+        return
+    query = message.text.replace('/testweb', '').strip() or "امیر نوری"
+    bot.send_chat_action(message.chat.id, 'typing')
+    data = fetch_web_context(query)
+    if data:
+        reply_formatted(message, f"🔍 <b>نتایج خام دریافتی از وب:</b>\n\n{data[:1500]}")
+    else:
+        reply_formatted(message, "❌ وب سرچ پاسخی برنگرداند.")
+
+@bot.message_handler(commands=['web', 'search'])
+def handle_quick_search(message):
+    if not is_authorized(message.from_user.id):
+        return
+    
+    if not gemini_client:
+        reply_formatted(message, "⚠️ متغیر GEMINI_API_KEY در تنظیمات پنل رندر تنظیم نشده است.")
+        return
+
+    query = message.text.replace('/web', '').replace('/search', '').strip()
+    if not query:
+        reply_formatted(message, "لطفاً عبارت مد نظر را بنویسید:\nمثال: <code>/web امیر نوری</code>")
+        return
+
+    bot.send_chat_action(message.chat.id, 'typing')
+    web_data = fetch_web_context(query)
+    prompt = f"بر اساس اطلاعات زنده وب، دقیق و مستند به پرسش پاسخ بده:\n\nاطلاعات وب:\n{web_data}\n\nپرسش: {query}"
+    
+    try:
+        response = gemini_client.models.generate_content(
+            model=MODEL_GEMINI,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=BASE_SYSTEM_PROMPT,
+                temperature=0.2,
+                max_output_tokens=800
+            )
+        )
+        reply_formatted(message, response.text)
+    except Exception as e:
+        reply_formatted(message, f"خطا در جستجو: {e}")
+
+# ۸. مدیریت پیام‌های متنی عمومی
 @bot.message_handler(func=lambda message: True)
 def handle_chat(message):
     if not is_authorized(message.from_user.id):
@@ -287,23 +335,20 @@ def handle_chat(message):
             assembled_prompt += f"\n\n{EXAM_SYSTEM_PROMPT}"
         assembled_prompt += f"\nاطلاعات سیستمی: زمان سرور: {current_time}"
 
-        # به خاطر سپردن پیام کاربر
-        if is_memory_active:
-            if chat_id not in chat_memory:
-                chat_memory[chat_id] = []
-            chat_memory[chat_id].append({"role": "user", "content": user_text})
-            if len(chat_memory[chat_id]) > 10:
-                chat_memory[chat_id] = chat_memory[chat_id][-10:]
-
-        # اجرای مدل‌های Groq
+        # مسیر مدل‌های فوق‌سریع و هوشمند Groq
         if selected_model in [MODEL_FAST, MODEL_SMART]:
             if not groq_client:
-                reply_formatted(message, "⚠️ متغیر GROQ_API_KEY در تنظیمات پنل رندر خالی است.")
+                reply_formatted(message, "⚠️ کلید GROQ_API_KEY در تنظیمات رندر تعریف نشده است.")
                 return
 
             max_output_tokens = 1500 if selected_model == MODEL_SMART else 800
 
             if is_memory_active:
+                if chat_id not in chat_memory:
+                    chat_memory[chat_id] = []
+                chat_memory[chat_id].append({"role": "user", "content": user_text})
+                if len(chat_memory[chat_id]) > 10:
+                    chat_memory[chat_id] = chat_memory[chat_id][-10:]
                 payload_messages = [{"role": "system", "content": assembled_prompt}] + chat_memory[chat_id]
             else:
                 payload_messages = [
@@ -319,10 +364,10 @@ def handle_chat(message):
             )
             reply_text = response.choices[0].message.content
 
-        # اجرای مدل Gemini + وب
+        # مسیر مدل Gemini متصل به وب
         else:
             if not gemini_client:
-                reply_formatted(message, "⚠️ متغیر GEMINI_API_KEY در تنظیمات پنل رندر خالی است.")
+                reply_formatted(message, "⚠️ کلید GEMINI_API_KEY در تنظیمات رندر تعریف نشده است.")
                 return
 
             web_info = fetch_web_context(user_text)
@@ -330,7 +375,9 @@ def handle_chat(message):
 
             gemini_contents = []
             if is_memory_active:
-                for item in chat_memory[chat_id][:-1]:
+                if chat_id not in chat_memory:
+                    chat_memory[chat_id] = []
+                for item in chat_memory[chat_id]:
                     role = "user" if item["role"] == "user" else "model"
                     gemini_contents.append({"role": role, "parts": [{"text": item["content"]}]})
                 gemini_contents.append({"role": "user", "parts": [{"text": enriched_text}]})
@@ -348,10 +395,12 @@ def handle_chat(message):
             )
             reply_text = response.text
 
-        # ثبت پاسخ در حافظه و ارسال نهایی
+        # ثبت سوابق در حافظه و ارسال پاسخ
         if reply_text and reply_text.strip():
             raw_text = reply_text.strip()
             if is_memory_active:
+                if selected_model == MODEL_GEMINI:
+                    chat_memory[chat_id].append({"role": "user", "content": user_text})
                 chat_memory[chat_id].append({"role": "assistant", "content": raw_text})
                 if len(chat_memory[chat_id]) > 10:
                     chat_memory[chat_id] = chat_memory[chat_id][-10:]
@@ -360,8 +409,8 @@ def handle_chat(message):
             reply_formatted(message, "پاسخی دریافت نشد.")
 
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Chat Execution Error: {e}")
         reply_formatted(message, f"خطا در پردازش: {e}")
 
-print("ربات با موتورهای سه‌گانه آماده به کار است...")
+print("ربات سه موتوره با قابلیت وب‌سرچ فعال شد...")
 bot.infinity_polling()
