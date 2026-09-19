@@ -5,6 +5,7 @@ from datetime import datetime
 from flask import Flask
 import telebot
 from telebot.apihelper import ApiTelegramException
+from groq import Groq
 from google import genai
 from google.genai import types
 
@@ -13,12 +14,12 @@ try:
 except ImportError:
     from duckduckgo_search import DDGS
 
-# ۱. وب‌سرور سبک برای زنده نگه‌داشتن سرویس در رندر
+# ۱. وب‌سرور سبک برای زنده نگه‌داشتن در رندر
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Personal Gemini Assistant is Online!"
+    return "Hybrid Fast + Web AI Assistant is Online!"
 
 def run_web():
     port = int(os.environ.get("PORT", 8080))
@@ -26,90 +27,88 @@ def run_web():
 
 threading.Thread(target=run_web, daemon=True).start()
 
-# ۲. فراخوانی متغیرها از رندر
+# ۲. فراخوانی متغیرها و کلاینت‌ها
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 ALLOWED_USERS_RAW = os.environ.get("ALLOWED_USERS", "")
 ALLOWED_USERS = [int(uid.strip()) for uid in ALLOWED_USERS_RAW.split(",") if uid.strip().isdigit()]
 
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
-client = genai.Client(api_key=GEMINI_API_KEY)
+groq_client = Groq(api_key=GROQ_API_KEY)
+gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
-# ۳. مدیریت حافظه و وضعیت چت‌ها
+# ۳. متغیرهای حافظه و تنظیمات چت
 chat_memory = {}
 memory_status = {}
+user_engine = {}  # 'groq' یا 'gemini'
 
 def is_authorized(user_id):
     if not ALLOWED_USERS:
         return True
     return user_id in ALLOWED_USERS
 
-# ۴. پرامپت سیستمی و دستورالعمل‌ها
 SYSTEM_PROMPT = """
-تو یک دستیار هوش مصنوعی شخصی، سریع، دقیق، متصل به وب و مسلط به تمام زمینه‌ها هستی.
-تو در بستر پیام‌رسان تلگرام با کاربر گفتگو می‌کنی.
+تو یک دستیار هوش مصنوعی شخصی، هوشمند، سریع و مسلط به تمامی زمینه‌ها هستی.
+خروجی تو در تلگرام نمایش داده می‌شود.
 
-قوانین اصلی:
-۱. اگر اطلاعات زنده وب در اختیارت قرار گرفت، به طور مستقیم از آن برای پاسخ‌های موثق و بدون توهم استفاده کن.
-۲. اگر اطلاعات وب نامرتبط بود، فقط به دانش عمومی خودت تکیه کن.
-۳. در معرفی افراد و اخبار، حدس نزن و داستان‌سرایی نکن.
-۴. تحت هیچ شرایطی از فرمت LaTeX و نماد دلار ($) استفاده نکن؛ محاسبات ریاضی را به شکل متن ساده بنویس (مثال: ۱۵ × ۴۲ = ۶۳۰).
-۵. پاسخ‌ها شسته‌رفته، سریع و با لحن محترمانه باشند.
-
-دستورات فعال در ربات:
-- /help : نمایش راهنما
-- /memory_on : فعال‌سازی حافظه گفتگو
-- /memory_off : غیرفعال کردن حافظه
-- /clear : پاکسازی سابقه مکالمه فعلی
-- /start : شروع مجدد
+قوانین نگارشی:
+۱. اگر اطلاعات وب در اختیارت قرار گرفت، مستقیماً به آن استناد کن و از توهم پرهیز کن.
+۲. تحت هیچ شرایطی از فرمت LaTeX و علامت دلار ($) استفاده نکن؛ تمام فرمول‌ها را به صورت متن ساده بنویس.
+۳. پاسخ‌ها سریع، دقیق و با لحن طبیعی و روان باشند.
 """
 
 HELP_TEXT = """
-🤖 <b>راهنمای دستورات دستیار شخصی:</b>
+🤖 <b>راهنمای دستیار هوشمند دوگانه:</b>
 
-• /help : نمایش راهنما
-• /start : بررسی وضعیت و راه‌اندازی
-• /memory_on : فعال‌سازی حافظه گفتگو
-• /memory_off : غیرفعال‌سازی حافظه (حالت مستقل و سبک)
-• /clear : پاکسازی سابقه مکالمه جاری
+⚡ <b>موتورهای پاسخ‌دهی:</b>
+• /engine_groq : فعال‌سازی موتور پرسرعت Groq (زیر ۱ ثانیه - مناسب مکالمه و کد)
+• /engine_gemini : فعال‌سازی موتور Gemini با اتصال به وب (دقیق، بدون توهم و زنده)
+
+🔍 <b>جستجوی سریع:</b>
+• با نوشتن <code>/web متن</code> یا <code>/search متن</code> می‌توانید بدون تغییر موتور، همان یک پیام را مستقیماً در وب جستجو کنید.
+
+🧠 <b>تنظیمات حافظه:</b>
+• /memory_on : فعال‌سازی حافظه
+• /memory_off : غیرفعال‌سازی حافظه
+• /clear : پاکسازی حافظه فعلی
 """
 
 def fetch_web_context(query):
-    """جستجوی زنده در وب برای جلوگیری کامل از توهم"""
     try:
         with DDGS() as ddgs:
             results = list(ddgs.text(query, max_results=3))
             if not results:
                 return ""
-            context_snippets = []
-            for item in results:
-                title = item.get("title", "")
-                body = item.get("body", "")
-                context_snippets.append(f"• {title}: {body}")
-            return "\n".join(context_snippets)
+            snippets = [f"• {r.get('title', '')}: {r.get('body', '')}" for r in results]
+            return "\n".join(snippets)
     except Exception as e:
         print(f"Web search error: {e}")
         return ""
 
+def format_and_send(chat_id, message_id, raw_text):
+    formatted = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', raw_text)
+    formatted = re.sub(r'```(.*?)```', r'<pre>\1</pre>', formatted, flags=re.DOTALL)
+    formatted = re.sub(r'`(.*?)`', r'<code>\1</code>', formatted)
+    try:
+        bot.reply_to(telebot.types.Message(message_id=message_id, chat=telebot.types.Chat(chat_id, 'private')), formatted, parse_mode='HTML')
+    except ApiTelegramException:
+        bot.send_message(chat_id, raw_text)
+
+# دستورات تغییر وضعیت
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     if not is_authorized(message.from_user.id):
         return
-
     chat_id = message.chat.id
     chat_memory[chat_id] = []
-    
     if chat_id not in memory_status:
         memory_status[chat_id] = True
-
-    state_text = "فعال است" if memory_status[chat_id] else "غیرفعال است"
-    welcome_text = (
-        f"سلام! دستیار مجهز به موتور Gemini و سرچ وب آماده است.\n\n"
-        f"وضعیت فعلی: <b>حافظه {state_text}</b>.\n\n"
-        + HELP_TEXT
-    )
-    bot.reply_to(message, welcome_text, parse_mode='HTML')
+    if chat_id not in user_engine:
+        user_engine[chat_id] = "groq"
+    
+    bot.reply_to(message, f"سلام! دستیار شخصی آماده است.\nموتور فعال: <b>{user_engine[chat_id].upper()}</b>\n\n" + HELP_TEXT, parse_mode='HTML')
 
 @bot.message_handler(commands=['help'])
 def send_help(message):
@@ -117,12 +116,26 @@ def send_help(message):
         return
     bot.reply_to(message, HELP_TEXT, parse_mode='HTML')
 
+@bot.message_handler(commands=['engine_groq'])
+def switch_groq(message):
+    if not is_authorized(message.from_user.id):
+        return
+    user_engine[message.chat.id] = "groq"
+    bot.reply_to(message, "⚡ <b>موتور Groq فعال شد.</b> سرعت پاسخ‌دهی به حداکثر رسید.", parse_mode='HTML')
+
+@bot.message_handler(commands=['engine_gemini'])
+def switch_gemini(message):
+    if not is_authorized(message.from_user.id):
+        return
+    user_engine[message.chat.id] = "gemini"
+    bot.reply_to(message, "🌐 <b>موتور Gemini + سرچ وب فعال شد.</b> پاسخ‌ها با بررسی زنده اینترنت داده می‌شوند.", parse_mode='HTML')
+
 @bot.message_handler(commands=['memory_on'])
 def enable_memory(message):
     if not is_authorized(message.from_user.id):
         return
     memory_status[message.chat.id] = True
-    bot.reply_to(message, "✅ <b>حافظه فعال شد.</b> سابقه پیام‌ها ذخیره و پیگیری می‌شود.", parse_mode='HTML')
+    bot.reply_to(message, "✅ <b>حافظه فعال شد.</b>", parse_mode='HTML')
 
 @bot.message_handler(commands=['memory_off'])
 def disable_memory(message):
@@ -130,102 +143,124 @@ def disable_memory(message):
         return
     memory_status[message.chat.id] = False
     chat_memory[message.chat.id] = []
-    bot.reply_to(message, "❌ <b>حافظه غیرفعال شد.</b> تمام پیام‌ها مستقل بررسی می‌شوند.", parse_mode='HTML')
+    bot.reply_to(message, "❌ <b>حافظه غیرفعال شد.</b>", parse_mode='HTML')
 
 @bot.message_handler(commands=['clear'])
 def clear_history(message):
     if not is_authorized(message.from_user.id):
         return
     chat_memory[message.chat.id] = []
-    bot.reply_to(message, "حافظه مکالمه جاری پاک شد.")
+    bot.reply_to(message, "حافظه پاک شد.")
 
+# سرچ تکی و فوری در وب بدون نیاز به تغییر موتور
+@bot.message_handler(commands=['web', 'search'])
+def handle_quick_search(message):
+    if not is_authorized(message.from_user.id):
+        return
+    
+    query = message.text.replace('/web', '').replace('/search', '').strip()
+    if not query:
+        bot.reply_to(message, "لطفاً عبارت مورد نظر را بعد از دستور بنویسید.\nمثال: <code>/web سام صابری کیه</code>", parse_mode='HTML')
+        return
+
+    bot.send_chat_action(message.chat.id, 'typing')
+    web_data = fetch_web_context(query)
+    prompt = f"با توجه به اطلاعات وب به این موضوع پاسخ بده:\n\nاطلاعات وب:\n{web_data}\n\nپرسش: {query}"
+    
+    try:
+        response = gemini_client.models.generate_content(
+            model="gemini-3.5-flash-lite",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_PROMPT,
+                temperature=0.2,
+                max_output_tokens=800
+            )
+        )
+        format_and_send(message.chat.id, message.message_id, response.text.strip())
+    except Exception as e:
+        print(f"Search Error: {e}")
+        bot.reply_to(message, "خطا در جستجوی اینترنتی.")
+
+# هندلر پیام‌های عادی
 @bot.message_handler(func=lambda message: True)
 def handle_chat(message):
     if not is_authorized(message.from_user.id):
         return
 
+    chat_id = message.chat.id
+    current_engine = user_engine.get(chat_id, "groq")
+    is_mem = memory_status.get(chat_id, True)
+    text = message.text
+
+    bot.send_chat_action(chat_id, 'typing')
+
     try:
-        bot.send_chat_action(message.chat.id, 'typing')
-        chat_id = message.chat.id
-        user_query = message.text
+        # ۱. مسیر موتور فوق‌سریع GROQ (پیش‌فرض)
+        if current_engine == "groq":
+            system_meta = f"{SYSTEM_PROMPT}\nزمان سرور: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+            
+            if is_mem:
+                if chat_id not in chat_memory:
+                    chat_memory[chat_id] = []
+                chat_memory[chat_id].append({"role": "user", "content": text})
+                if len(chat_memory[chat_id]) > 10:
+                    chat_memory[chat_id] = chat_memory[chat_id][-10:]
+                messages = [{"role": "system", "content": system_meta}] + chat_memory[chat_id]
+            else:
+                messages = [{"role": "system", "content": system_meta}, {"role": "user", "content": text}]
 
-        # جستجوی وب برای سوالات متنی
-        web_info = fetch_web_context(user_query)
-        if web_info:
-            enriched_prompt = (
-                f"{user_query}\n\n"
-                f"[اطلاعات زنده وب برای استناد]:\n{web_info}"
-            )
-        else:
-            enriched_prompt = user_query
-
-        is_memory_active = memory_status.get(chat_id, True)
-
-        # آماده‌سازی پرامپت و تاریخچه برای SDK رسمی گوگل
-        contents_payload = []
-        if is_memory_active:
-            if chat_id not in chat_memory:
-                chat_memory[chat_id] = []
-
-            for entry in chat_memory[chat_id]:
-                role_label = "user" if entry["role"] == "user" else "model"
-                contents_payload.append({
-                    "role": role_label,
-                    "parts": [{"text": entry["content"]}]
-                })
-
-            contents_payload.append({
-                "role": "user",
-                "parts": [{"text": enriched_prompt}]
-            })
-        else:
-            contents_payload = [{
-                "role": "user",
-                "parts": [{"text": enriched_prompt}]
-            }]
-
-        current_time = datetime.now().strftime("%Y-%m-%d %H:%M")
-        full_system_instruction = f"{SYSTEM_PROMPT}\nزمان فعلی سرور: {current_time}"
-
-        # فراخوانی رسمی مدل Gemini 3.5 Flash Lite
-        response = client.models.generate_content(
-            model="gemini-3.5-flash-lite",
-            contents=contents_payload,
-            config=types.GenerateContentConfig(
-                system_instruction=full_system_instruction,
+            resp = groq_client.chat.completions.create(
+                model="qwen/qwen3.8-27b",
+                messages=messages,
                 temperature=0.3,
-                max_output_tokens=800
+                max_tokens=800
             )
-        )
+            ans = resp.choices[0].message.content.strip()
 
-        reply_text = response.text
+            if is_mem:
+                chat_memory[chat_id].append({"role": "assistant", "content": ans})
 
-        if reply_text and reply_text.strip():
-            raw_text = reply_text.strip()
+            format_and_send(chat_id, message.message_id, ans)
 
-            # تبدیل فرمت‌های متنی به استایل‌های رسمی تلگرام
-            formatted_text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', raw_text)
-            formatted_text = re.sub(r'```(.*?)```', r'<pre>\1</pre>', formatted_text, flags=re.DOTALL)
-            formatted_text = re.sub(r'`(.*?)`', r'<code>\1</code>', formatted_text)
+        # ۲. مسیر موتور همه‌فن‌حریف GEMINI + سرچ وب
+        else:
+            web_info = fetch_web_context(text)
+            enriched = f"{text}\n\n[اطلاعات وب]:\n{web_info}" if web_info else text
 
-            if is_memory_active:
-                chat_memory[chat_id].append({"role": "user", "content": user_query})
-                chat_memory[chat_id].append({"role": "model", "content": raw_text})
+            contents = []
+            if is_mem:
+                if chat_id not in chat_memory:
+                    chat_memory[chat_id] = []
+                for m in chat_memory[chat_id]:
+                    role = "user" if m["role"] == "user" else "model"
+                    contents.append({"role": role, "parts": [{"text": m["content"]}]})
+                contents.append({"role": "user", "parts": [{"text": enriched}]})
+            else:
+                contents = [{"role": "user", "parts": [{"text": enriched}]}]
 
-                # نگهداری حداکثر ۱۰ پیام آخر (۵ تبادل)
+            resp = gemini_client.models.generate_content(
+                model="gemini-3.5-flash-lite",
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_PROMPT,
+                    temperature=0.3,
+                    max_output_tokens=800
+                )
+            )
+            ans = resp.text.strip()
+
+            if is_mem:
+                chat_memory[chat_id].append({"role": "user", "content": text})
+                chat_memory[chat_id].append({"role": "assistant", "content": ans})
                 if len(chat_memory[chat_id]) > 10:
                     chat_memory[chat_id] = chat_memory[chat_id][-10:]
 
-            try:
-                bot.reply_to(message, formatted_text, parse_mode='HTML')
-            except ApiTelegramException:
-                bot.reply_to(message, raw_text)
-        else:
-            bot.reply_to(message, "پاسخی از سمت مدل دریافت نشد؛ لطفاً دوباره بپرسید.")
+            format_and_send(chat_id, message.message_id, ans)
 
     except Exception as e:
-        print(f"Error details: {e}")
-        bot.reply_to(message, "در پردازش پیام خطایی رخ داد؛ لطفاً چند لحظه بعد تلاش کنید.")
+        print(f"Chat Error: {e}")
+        bot.reply_to(message, "در پردازش پیام خطایی رخ داد. لطفاً دوباره تلاش کنید.")
 
-print("ربات با هوش Gemini و اتصال وب فعال شد...")
+print("ربات هیبریدی (Groq + Gemini Web) آماده به کار است...")
 bot.infinity_polling()
