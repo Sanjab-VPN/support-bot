@@ -7,7 +7,7 @@ import telebot
 from telebot.apihelper import ApiTelegramException
 from groq import Groq
 
-# ۱. وب‌سرور سبک برای زنده نگه‌داشتن سرویس در رندر
+# ۱. وب‌سرور سبک برای فعال نگه‌داشتن سرویس در رندر
 app = Flask(__name__)
 
 @app.route('/')
@@ -20,7 +20,7 @@ def run_web():
 
 threading.Thread(target=run_web, daemon=True).start()
 
-# ۲. فراخوانی متغیرها از متغیرهای محیطی
+# ۲. فراخوانی متغیرهای محیطی
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
@@ -30,65 +30,73 @@ ALLOWED_USERS = [int(uid.strip()) for uid in ALLOWED_USERS_RAW.split(",") if uid
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 client = Groq(api_key=GROQ_API_KEY)
 
-# ۳. مدل‌ها، وضعیت حافظه و انتخاب موتور هوش مصنوعی
+# ۳. مدل‌ها و وضعیت چت‌ها
 MODEL_FAST = "qwen/qwen3.8-27b"
 MODEL_SMART = "openai/gpt-oss-120b"
 
 chat_memory = {}
 memory_status = {}
 user_model = {}
+exam_mode_status = {}
 
 def is_authorized(user_id):
     if not ALLOWED_USERS:
         return True
     return user_id in ALLOWED_USERS
 
-# ۴. پرامپت سیستمی تجمیع‌شده
-SYSTEM_PROMPT = """
-تو یک دستیار هوش مصنوعی شخصی، سریع، دقیق و مسلط به تمام زمینه‌ها هستی که در بستر پیام‌رسان تلگرام فعالیت می‌کنی.
+# ۴. پرامپت‌های تفکیک‌شده (کاهش چشمگیر مصرف توکن ورودی)
+BASE_SYSTEM_PROMPT = """
+تو یک دستیار هوش مصنوعی شخصی، سریع، صریح و بدون حاشیه هستی که در تلگرام فعالیت می‌کنی.
 
-دستورات فعال در بات:
-اگر کاربر درباره دستورات، امکانات یا فرامین ربات پرسید، این موارد را معرفی کن:
-- /help : نمایش راهنمای کامل
-- /fast : فعال‌سازی مدل فوق‌سریع و سبک
-- /smart : فعال‌سازی مدل عمیق، پیشرفته و تحلیلی (120B)
-- /memory_on : فعال‌سازی حافظه پیوسته
-- /memory_off : غیرفعال کردن حافظه و پردازش مستقل
-- /clear : پاکسازی تاریخچه مکالمه فعلی
-- /start : بررسی وضعیت و شروع مجدد
+دستورات بات:
+- /fast : سوئیچ به مدل سریع
+- /smart : سوئیچ به مدل فوق‌هوشمند (120B)
+- /exam_on : فعال‌سازی حالت تخصصی حل تست زبان
+- /exam_off : غیرفعال‌سازی حالت تست
+- /memory_on : فعال‌سازی حافظه
+- /memory_off : غیرفعال‌سازی حافظه
+- /clear : پاکسازی تاریخچه
+- /help : راهنمای کامل
 
-قوانین نگارشی و ساختاری عمومی:
-۱. پاسخ‌ها سریع، بدون حاشیه و مستقیم به اصل موضوع باشند.
-۲. تحت هیچ شرایطی از فرمت LaTeX و علامت دلار ($) استفاده نکن؛ تمام فرمول‌ها و محاسبات را به صورت متن ساده بنویس (مثال: ۱۵ × ۴۲ = ۶۳۰).
-۳. زبان پیش‌فرض فارسی سلیس است، مگر اینکه کاربر به زبان انگلیسی یا زبان دیگری پیام بدهد یا سوال تست زبان مطرح کرده باشد.
+قوانین نگارشی:
+۱. پاسخ‌ها مستقیم، بدون تعارف و به اصل موضوع باشند.
+۲. فرمت LaTeX و علامت دلار ($) اکیداً ممنوع است؛ تمام فرمول‌ها و عبارات را متن ساده بنویس.
+۳. زبان پیش‌فرض فارسی سلیس است، مگر پیام کاربر انگلیسی باشد.
+"""
 
+EXAM_SYSTEM_PROMPT = """
 دستورالعمل ویژه حل سوالات چهارگزینه‌ای و آزمون‌های زبان (Autonomous English Exam Protocol):
-اگر کاربر سوال یا تستی به زبان انگلیسی یا تست چهارگزینه‌ای ارسال کرد، این پروتکل ضدخطا را رعایت کن:
-۱. صورت‌های سوال منفی: اگر سوال به دنبال گزینه غلط یا دارای خطا بود (مانند GRAMMATICAL ERROR یا INCORRECT)، حتماً آن را مشخص کن.
-۲. تله‌های نحوی حساس:
-   - در عبارات وصفی/وجهی (Dangling Modifiers)، توجه داشته باش که فاعل جمله پایه باید عامل واقعی عمل باشد. (اسم‌های دارای آپاستروف ملکی مانند "The officer's license" فاعل دستوری‌شان کلمه license است نه شخص).
-   - تفاوت بین وارونگی صفت (Adjective Fronting) و قیود منفی را رعایت کن.
-   - وجه التزامی (Subjunctive) را در حالت منفی فقط با "not be + pp" یا شکل پایه بدون افعال کمکی به کار ببر.
-۳. مهار مصرف توکن: تحلیل هر سوال یا گزینه را حداکثر در ۲ تا ۳ سطر فشرده نگه دار تا پاسخ قطع نشود.
-۴. سوالات دارای نقص طراحی: اگر سوال آزمون نقص فنی داشت یا همه گزینه‌ها غلط بودند، نقص را در یک خط بگو و محتمل‌ترین گزینه مدنظر طراح را برگزین.
-۵. خروجی ضدخطا: سطر آخر هر تست باید دقیقاً در این قالب درج شود تا حرف گزینه اشتباه اعلام نشود:
+شما اکنون در حالت تست‌زنی هستید. تمام قوانین ضدخطا زیر را با دقت اعمال کنید:
+۱. صورت سوال منفی: در صورت مشاهده عباراتی مثل GRAMMATICAL ERROR یا INCORRECT، ابتدا هشدار بدهید.
+۲. تله‌های ساختاری مهم:
+   - فاعل ملکی (Possessive Trap): در عباراتی مثل "The officer's license"، فاعل دستوری کلمه license است نه شخص؛ پس اگر قبل از آن توصیف‌کننده معلق (Dangling Modifier) باشد، فاعل نادرست است.
+   - افعال حسی و سببی در حالت مجهول: افعالی مثل see, hear, make در حالت مجهول الزاماً با مصدر با to می‌آیند (مثال: was seen to enter).
+   - شرطی‌های ترکیبی (Mixed Conditionals): در ساختار Had + pp، انتهای جمله را بررسی کن؛ اگر قید زمان حال (today, now) وجود دارد، نتیجه باید would + base form باشد نه would have + pp.
+   - وجه التزامی منفی (Subjunctive): فقط فرمول "not be + pp" بدون افعال کمکی کمکی کمکی دیگر.
+۳. مهار توکن: تحلیل هر تست حداکثر در ۲ سطر کوتاه.
+۴. سوال دارای نقص فنی: اگر سوال اشتباه طراحی شده، عیب را در یک جمله بگو و گزینه محتمل طراح را انتخاب کن.
+۵. خروجی ضدخطا (الزامی در خط آخر هر سوال):
    RESULT: [Correct Phrase/Word] -> [Option Letter]
 """
 
 HELP_TEXT = """
 🤖 <b>راهنمای دستورات دستیار شخصی:</b>
 
-<b>مدیریت مدل‌ها:</b>
-• /fast : سوئیچ به مدل فوق‌سریع (مناسب کارهای روزمره و پاسخ‌های آنی)
-• /smart : سوئیچ به مدل فوق‌هوشمند (120B) (استدلال عمیق، تست‌های دشوار، کدنویسی و تحلیل تخصصی)
+<b>موتورهای هوش مصنوعی:</b>
+• /fast : مدل فوق‌سریع (کارهای روزمره)
+• /smart : مدل فوق‌هوشمند 120B (استدلال سنگین و تست‌های دشوار)
+
+<b>حالت تخصصی آزمون (Exam Mode):</b>
+• /exam_on : فعال‌سازی پروتکل ضدخطای حل تست زبان انگلیسی
+• /exam_off : خروج از حالت تست و بازگشت به دستیار سبک
 
 <b>مدیریت حافظه:</b>
-• /memory_on : فعال‌سازی حافظه (دنبال کردن مکالمه)
-• /memory_off : غیرفعال‌سازی حافظه (پاسخ‌های مستقل و صرفه‌جویی)
-• /clear : پاکسازی سابقه گفتگوی جاری
+• /memory_on : ذخیره و ادامه پیوسته گفتگو
+• /memory_off : پاسخ‌های مستقل (صرفه‌جویی در توکن)
+• /clear : پاکسازی تاریخچه مکالمه فعلی
 
-<b>عمومی:</b>
-• /start : بررسی وضعیت کلی
+<b>سیستمی:</b>
+• /start : بررسی وضعیت فعلی
 • /help : نمایش همین راهنما
 """
 
@@ -100,19 +108,20 @@ def send_welcome(message):
     chat_id = message.chat.id
     chat_memory[chat_id] = []
     
-    if chat_id not in memory_status:
-        memory_status[chat_id] = True
-    if chat_id not in user_model:
-        user_model[chat_id] = MODEL_FAST
+    memory_status.setdefault(chat_id, True)
+    user_model.setdefault(chat_id, MODEL_FAST)
+    exam_mode_status.setdefault(chat_id, False)
 
-    state_text = "فعال" if memory_status[chat_id] else "غیرفعال"
+    mem_text = "فعال" if memory_status[chat_id] else "غیرفعال"
+    exam_text = "فعال 🎯" if exam_mode_status[chat_id] else "غیرفعال"
     current_m = "فوق‌سریع ⚡️" if user_model[chat_id] == MODEL_FAST else "فوق‌هوشمند (120B) 🧠"
 
     welcome_text = (
-        f"سلام! دستیار شخصی شما آماده است.\n\n"
-        f"وضعیت فعلی:\n"
-        f"• <b>مدل فعال:</b> {current_m}\n"
-        f"• <b>حافظه:</b> {state_text}\n\n"
+        f"سلام! دستیار شخصی آماده است.\n\n"
+        f"وضعیت فعال:\n"
+        f"• <b>مدل:</b> {current_m}\n"
+        f"• <b>حافظه:</b> {mem_text}\n"
+        f"• <b>حالت آزمون (Exam Mode):</b> {exam_text}\n\n"
         + HELP_TEXT
     )
     bot.reply_to(message, welcome_text, parse_mode='HTML')
@@ -128,29 +137,39 @@ def switch_to_fast(message):
     if not is_authorized(message.from_user.id):
         return
     user_model[message.chat.id] = MODEL_FAST
-    bot.reply_to(
-        message,
-        "⚡️ <b>سوئیچ به مدل فوق‌سریع انجام شد.</b>\nسرعت پاسخ‌دهی بالا و مصرف بهینه توکن.",
-        parse_mode='HTML'
-    )
+    bot.reply_to(message, "⚡️ <b>مدل فوق‌سریع فعال شد.</b>", parse_mode='HTML')
 
 @bot.message_handler(commands=['smart'])
 def switch_to_smart(message):
     if not is_authorized(message.from_user.id):
         return
     user_model[message.chat.id] = MODEL_SMART
+    bot.reply_to(message, "🧠 <b>مدل فوق‌هوشمند (120B) فعال شد.</b>", parse_mode='HTML')
+
+@bot.message_handler(commands=['exam_on'])
+def enable_exam_mode(message):
+    if not is_authorized(message.from_user.id):
+        return
+    exam_mode_status[message.chat.id] = True
     bot.reply_to(
-        message,
-        "🧠 <b>سوئیچ به مدل فوق‌هوشمند (120B) انجام شد.</b>\nبالاترین قدرت استدلال، مناسب تست‌های پیچیده، کدنویسی و تحلیل عمیق.",
+        message, 
+        "🎯 <b>حالت تخصصی آزمون (Exam Mode) فعال شد.</b>\nپروتکل حل تست با تفکیک تله‌های ساختاری، فاعل ملکی، و فرمت دقیق فعال است.", 
         parse_mode='HTML'
     )
+
+@bot.message_handler(commands=['exam_off'])
+def disable_exam_mode(message):
+    if not is_authorized(message.from_user.id):
+        return
+    exam_mode_status[message.chat.id] = False
+    bot.reply_to(message, "⚪️ <b>حالت آزمون غیرفعال شد.</b> بات به حالت عمومی بازگشت.", parse_mode='HTML')
 
 @bot.message_handler(commands=['memory_on'])
 def enable_memory(message):
     if not is_authorized(message.from_user.id):
         return
     memory_status[message.chat.id] = True
-    bot.reply_to(message, "✅ <b>حافظه فعال شد.</b> پیام‌های قبلی ذخیره و پیگیری می‌شوند.", parse_mode='HTML')
+    bot.reply_to(message, "✅ <b>حافظه فعال شد.</b>", parse_mode='HTML')
 
 @bot.message_handler(commands=['memory_off'])
 def disable_memory(message):
@@ -158,14 +177,14 @@ def disable_memory(message):
         return
     memory_status[message.chat.id] = False
     chat_memory[message.chat.id] = []
-    bot.reply_to(message, "❌ <b>حافظه غیرفعال شد.</b> تمام پیام‌ها مستقل و بدون تاریخچه پردازش می‌شوند.", parse_mode='HTML')
+    bot.reply_to(message, "❌ <b>حافظه غیرفعال شد.</b>", parse_mode='HTML')
 
 @bot.message_handler(commands=['clear'])
 def clear_history(message):
     if not is_authorized(message.from_user.id):
         return
     chat_memory[message.chat.id] = []
-    bot.reply_to(message, "حافظه مکالمه جاری پاک شد.")
+    bot.reply_to(message, "حافظه مکالمه پاک شد.")
 
 @bot.message_handler(func=lambda message: True)
 def handle_chat(message):
@@ -177,13 +196,17 @@ def handle_chat(message):
         chat_id = message.chat.id
 
         is_memory_active = memory_status.get(chat_id, True)
+        is_exam_active = exam_mode_status.get(chat_id, False)
         selected_model = user_model.get(chat_id, MODEL_FAST)
         
-        # تنظیم سقف توکن بر اساس مدل فعال
         max_output_tokens = 1500 if selected_model == MODEL_SMART else 800
 
+        # ساخت داینامیک پرامپت سیستمی
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M")
-        full_system = f"{SYSTEM_PROMPT}\nاطلاعات سیستمی: زمان سرور: {current_time}"
+        assembled_prompt = BASE_SYSTEM_PROMPT
+        if is_exam_active:
+            assembled_prompt += f"\n\n{EXAM_SYSTEM_PROMPT}"
+        assembled_prompt += f"\nاطلاعات سیستمی: زمان سرور: {current_time}"
 
         if is_memory_active:
             if chat_id not in chat_memory:
@@ -191,14 +214,13 @@ def handle_chat(message):
 
             chat_memory[chat_id].append({"role": "user", "content": message.text})
 
-            # نگهداری حداکثر ۱۰ پیام آخر (۵ سوال و ۵ پاسخ)
             if len(chat_memory[chat_id]) > 10:
                 chat_memory[chat_id] = chat_memory[chat_id][-6:]
 
-            payload_messages = [{"role": "system", "content": full_system}] + chat_memory[chat_id]
+            payload_messages = [{"role": "system", "content": assembled_prompt}] + chat_memory[chat_id]
         else:
             payload_messages = [
-                {"role": "system", "content": full_system},
+                {"role": "system", "content": assembled_prompt},
                 {"role": "user", "content": message.text}
             ]
 
@@ -214,7 +236,6 @@ def handle_chat(message):
         if reply_text and reply_text.strip():
             raw_text = reply_text.strip()
 
-            # تبدیل عبارات متداول مارک‌داون به تگ‌های امن تلگرام
             formatted_text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', raw_text)
             formatted_text = re.sub(r'```(.*?)```', r'<pre>\1</pre>', formatted_text, flags=re.DOTALL)
             formatted_text = re.sub(r'`(.*?)`', r'<code>\1</code>', formatted_text)
@@ -227,11 +248,11 @@ def handle_chat(message):
             except ApiTelegramException:
                 bot.reply_to(message, raw_text)
         else:
-            bot.reply_to(message, "پاسخی دریافت نشد؛ لطفاً مجدداً پیام دهید.")
+            bot.reply_to(message, "پاسخی دریافت نشد؛ لطفاً دوباره بپرسید.")
 
     except Exception as e:
         print(f"Error details: {e}")
-        bot.reply_to(message, "در پردازش پیام مشکلی رخ داد؛ لطفاً چند لحظه بعد تلاش کنید.")
+        bot.reply_to(message, "در پردازش مشکلی رخ داد؛ لطفاً کمی بعد تلاش کنید.")
 
-print("ربات با موتور دوگانه (Fast + Smart 120B) و وب‌سرور آماده به کار است...")
+print("ربات با موتور دوگانه، مدیریت حافظه و Exam Mode فعال شد...")
 bot.infinity_polling()
