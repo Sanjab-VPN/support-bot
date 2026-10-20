@@ -12,12 +12,23 @@ from groq import Groq
 from google import genai
 from google.genai import types
 
-# ۱. وب‌سرور سبک جهت زنده نگه‌داشتن سرویس در رندر
+# ۱. وب‌سرور سبک برای زنده نگه‌داشتن سرویس در رندر
 app = Flask(__name__)
 
 @app.route('/')
 def home():
     return "Personal AI Assistant is Online & Active!"
+
+@app.route('/test-bale')
+def test_bale_http():
+    token = os.environ.get("BALE_BOT_TOKEN")
+    if not token:
+        return "BALE_BOT_TOKEN is not set in Render environment variables."
+    try:
+        res = requests.get(f"https://tapi.bale.ai/bot{token}/getMe", timeout=8)
+        return f"Status: {res.status_code}<br>Response: {res.text}"
+    except Exception as e:
+        return f"Connection to Bale failed: {e}"
 
 def run_web():
     port = int(os.environ.get("PORT", 8080))
@@ -30,6 +41,7 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY")
+BALE_BOT_TOKEN = os.environ.get("BALE_BOT_TOKEN")
 
 ALLOWED_USERS_RAW = os.environ.get("ALLOWED_USERS", "")
 ALLOWED_USERS = [int(uid.strip()) for uid in ALLOWED_USERS_RAW.split(",") if uid.strip().isdigit()]
@@ -38,7 +50,6 @@ bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
-# ۳. مدل‌ها و مدیریت وضعیت کاربران
 MODEL_FAST = "qwen/qwen3.8-27b"
 MODEL_SMART = "openai/gpt-oss-120b"
 MODEL_GEMINI = "gemini-3.5-flash-lite"
@@ -53,7 +64,6 @@ def is_authorized(user_id):
         return True
     return user_id in ALLOWED_USERS
 
-# ۴. پرامپت‌های سیستمی
 BASE_SYSTEM_PROMPT = """
 تو یک دستیار هوش مصنوعی شخصی، سریع، متصل به اینترنت، باهوش و بسیار صریح هستی که در تلگرام پاسخ می‌دهی.
 
@@ -75,26 +85,23 @@ HELP_TEXT = """
 🤖 <b>راهنمای دستیار شخصی:</b>
 
 <b>موتورهای هوش مصنوعی:</b>
-• /fast : فوق‌سریع Qwen (کارهای روزمره و کدنویسی)
-• /smart : فوق‌هوشمند 120B (استدلال سنگین و تست)
-• /gemini : مدل هوشمند متصل به وب زنده (Gemini Web)
+• /fast : فوق‌سریع Qwen
+• /smart : فوق‌هوشمند 120B
+• /gemini : مدل Gemini متصل به اینترنت زنده
 
-<b>ابزارهای وب:</b>
-• <code>/web متن</code> یا <code>/search متن</code> : استعلام فوری از وب
-• <code>/testweb عبارت</code> : تست خروجی خام موتور جستجو برای عیب‌یابی
+<b>ابزارهای وب و اتصالات:</b>
+• <code>/web متن</code> : استعلام فوری از وب
+• <code>/testweb عبارت</code> : تست خروجی خام Tavily
+• <code>/checkbale</code> : تست وضعیت اتصال سرور رندر به پیام‌رسان بله
 
 <b>مدیریت حافظه:</b>
 • /memory_on : فعال‌سازی حافظه
 • /memory_off : غیرفعال‌سازی حافظه
-• /clear : پاکسازی سابقه مکالمه جاری
+• /clear : پاکسازی تاریخچه گفتگو
 """
 
-# ۵. سیستم هوشمند فیلتر و واکشی وب (صرفه‌جویی در سهمیه Tavily)
 def should_search_web(text):
-    """تشخیص دقیق نیاز به وب‌سرچ برای جلوگیری از هدررفت سهمیه ۱۰۰۰تایی Tavily"""
     clean = text.strip().lower()
-
-    # ۱. اگر کاربر صراحتاً دستور جستجو داد، حتماً سرچ کن
     explicit_search_commands = [
         'سرچ کن', 'جستجو کن', 'گوگل کن', 'بگرد', 'پیدا کن', 'توی نت ببین',
         'تو نت ببین', 'سرچ بزن', 'search', 'سرچ', 'جستجو'
@@ -102,7 +109,6 @@ def should_search_web(text):
     if any(cmd in clean for cmd in explicit_search_commands):
         return True
 
-    # ۲. پیام‌های احوال‌پرسی، تعارفات یا تایید ساده هرگز نباید سرچ شوند
     greetings = [
         'سلام', 'درود', 'خوبی', 'چطوری', 'چه خبر', 'مرسی', 'ممنون', 'تشکر',
         'دمت گرم', 'دستت درد نکنه', 'قربونت', 'فدات', 'خسته نباشی', 'صبح بخیر',
@@ -113,47 +119,30 @@ def should_search_web(text):
     if clean in greetings or len(clean) < 4:
         return False
 
-    # ۳. فکت‌های زنده، مالی، حوادث، اشخاص و اخبار
     live_triggers = [
-        # بازار مالی و ارز
         'قیمت', 'نرخ', 'چنده', 'چند شده', 'دلار', 'یورو', 'ارز', 'طلا', 'سکه',
         'بورس', 'تومان', 'ریال', 'بیت‌کوین', 'بیت کوین', 'اتریوم', 'کریپتو',
-        'سهام', 'ارز دیجیتال', 'ماشین', 'خودرو', 'پراید',
-        # اخبار و زمان حال
         'اخبار', 'خبر', 'آخرین', 'جدیدترین', 'امروز', 'الان', 'دیشب', 'امشب',
-        'فردا', 'این روزها', 'تازه', 'رویداد', 'اتفاق', 'چیشد', 'چی شد',
-        'چیکار کرد', 'چه خبر از', 'اوضاع',
-        # وضعیت افراد و اشخاص
         'کیه', 'کیست', 'کجاست', 'وضعیت', 'حالش', 'سلامت', 'بیمارستان', 'تصادف',
-        'فوت', 'درگذشت', 'زنده‌ست', 'زنده است', 'دستگیر', 'بازداشت',
-        'چند سالشه', 'متولد', 'همسر', 'زنِ', 'شوهرِ', 'بیوگرافی',
-        # ورزش، بازی‌ها و آب‌وهوا
-        'نتیجه بازی', 'فوتبال', 'گل زد', 'بازی دیشب', 'بازی امروز', 'جدول لیگ',
-        'هواشناسی', 'آب و هوا', 'هوا چطوره', 'بارش', 'دما',
-        # تاریخ و زمان انتشار محصولات/تکنولوژی
-        'تاریخ انتشار', 'تاریخ عرضه', 'کی میاد', 'رونمایی', 'معرفی شد'
+        'فوت', 'درگذشت', 'زنده‌ست', 'زنده است', 'چند سالشه', 'متولد'
     ]
     return any(word in clean for word in live_triggers)
 
 def clean_query_for_search(text):
-    """پاکسازی ضمایر، افعال عامیانه و دستورات سرچ برای بدست آوردن کلیدواژه خالص"""
     cleaned = re.sub(r'[؟?!\.,]', '', text)
     remove_words = [
         'سرچ کن ببین', 'لطفا سرچ کن', 'سرچ کن', 'جستجو کن', 'گوگل کن', 'بگرد',
         'سرچ', 'جستجو', 'چیشده', 'چی شده', 'کیه', 'کیست', 'کجاست', 'چیکار کرده',
-        'چه خبر از', 'چه خبر', 'حالش چطوره', 'درباره', 'در مورد', 'قیمت امروز', 'آخرین'
+        'چه خبر از', 'چه خبر', 'حالش چطوره', 'درباره', 'در مورد'
     ]
     for word in remove_words:
         cleaned = cleaned.replace(word, '')
-    cleaned = cleaned.strip()
-    return cleaned if cleaned else text
+    return cleaned.strip() or text
 
 def fetch_web_context(query):
-    """جستجوی زنده با اولویت Tavily و سوپاپ اطمینان Google News RSS"""
     search_term = clean_query_for_search(query)
     snippets = []
 
-    # لایه ۱: Tavily Search API
     if TAVILY_API_KEY:
         try:
             url = "https://api.tavily.com/search"
@@ -167,7 +156,7 @@ def fetch_web_context(query):
             if res.status_code == 200:
                 data = res.json()
                 if "answer" in data and data["answer"]:
-                    snippets.append(f"• پاسخ سریع وب: {data['answer']}")
+                    snippets.append(f"• پاسخ سریع: {data['answer']}")
                 for r in data.get("results", []):
                     snippets.append(f"• {r.get('title', '')}: {r.get('content', '')}")
                 if snippets:
@@ -175,12 +164,11 @@ def fetch_web_context(query):
         except Exception as e:
             print(f"Tavily Error: {e}")
 
-    # لایه ۲: Google News RSS (با هدر واقعی مرورگر)
     try:
         encoded_query = urllib.parse.quote(search_term)
         rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=fa&gl=IR&ceid=IR:fa"
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0 Safari/537.36",
             "Accept-Language": "fa,en;q=0.9"
         }
         resp = requests.get(rss_url, headers=headers, timeout=5)
@@ -190,29 +178,25 @@ def fetch_web_context(query):
                 title = item.find('title').text if item.find('title') is not None else ""
                 desc = item.find('description').text if item.find('description') is not None else ""
                 clean_desc = re.sub('<[^<]+?>', '', desc)
-                snippets.append(f"• خبر: {title} - {clean_desc}")
+                snippets.append(f"• {title}: {clean_desc}")
     except Exception as e:
         print(f"Google News RSS Error: {e}")
 
     return "\n".join(snippets)
 
 def reply_formatted(message, text):
-    """ارسال متن با تبدیل تگ‌های Markdown به HTML مجاز تلگرام"""
     if not text or not text.strip():
         bot.reply_to(message, "پاسخی دریافت نشد.")
         return
-
     clean = text.strip()
     formatted = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', clean)
     formatted = re.sub(r'```(.*?)```', r'<pre>\1</pre>', formatted, flags=re.DOTALL)
     formatted = re.sub(r'`(.*?)`', r'<code>\1</code>', formatted)
-    
     try:
         bot.reply_to(message, formatted, parse_mode='HTML')
     except ApiTelegramException:
         bot.reply_to(message, clean)
 
-# ۶. دستورات تلگرام
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     if not is_authorized(message.from_user.id):
@@ -222,8 +206,7 @@ def send_welcome(message):
     memory_status.setdefault(chat_id, True)
     user_model.setdefault(chat_id, MODEL_FAST)
     exam_mode_status.setdefault(chat_id, False)
-
-    bot.reply_to(message, f"سلام! دستیار آماده است.\nموتور فعال: <b>{user_model[chat_id]}</b>\nبرای اتصال به وب دستور /gemini را بزنید.\n\n" + HELP_TEXT, parse_mode='HTML')
+    reply_formatted(message, f"سلام! دستیار آماده است.\nموتور فعال: <b>{user_model[chat_id]}</b>\n\n" + HELP_TEXT)
 
 @bot.message_handler(commands=['help'])
 def send_help(message):
@@ -250,14 +233,14 @@ def switch_gemini(message):
     if not is_authorized(message.from_user.id):
         return
     user_model[message.chat.id] = MODEL_GEMINI
-    reply_formatted(message, "🌐 <b>مدل Gemini متصل به وب زنده فعال شد.</b>")
+    reply_formatted(message, "🌐 <b>مدل Gemini متصل به وب فعال شد.</b>")
 
 @bot.message_handler(commands=['exam_on'])
 def enable_exam_mode(message):
     if not is_authorized(message.from_user.id):
         return
     exam_mode_status[message.chat.id] = True
-    reply_formatted(message, "🎯 <b>حالت آزمون فعال شد.</b> خروجی تک‌گزینه‌ای و قطعی.")
+    reply_formatted(message, "🎯 <b>حالت آزمون فعال شد.</b>")
 
 @bot.message_handler(commands=['exam_off'])
 def disable_exam_mode(message):
@@ -265,6 +248,46 @@ def disable_exam_mode(message):
         return
     exam_mode_status[message.chat.id] = False
     reply_formatted(message, "⚪️ <b>حالت آزمون غیرفعال شد.</b>")
+
+@bot.message_handler(commands=['clear'])
+def clear_history(message):
+    if not is_authorized(message.from_user.id):
+        return
+    chat_memory[message.chat.id] = []
+    reply_formatted(message, "حافظه مکالمه پاک شد.")
+
+@bot.message_handler(commands=['memory_on'])
+def enable_memory(message):
+    if not is_authorized(message.from_user.id):
+        return
+    memory_status[message.chat.id] = True
+    reply_formatted(message, "✅ حافظه فعال شد.")
+
+@bot.message_handler(commands=['memory_off'])
+def disable_memory(message):
+    if not is_authorized(message.from_user.id):
+        return
+    memory_status[message.chat.id] = False
+    chat_memory[message.chat.id] = []
+    reply_formatted(message, "❌ حافظه غیرفعال شد.")
+
+# دستور تست اتصال سرور رندر به بله
+@bot.message_handler(commands=['checkbale'])
+def check_bale_conn(message):
+    if not is_authorized(message.from_user.id):
+        return
+    
+    token = os.environ.get("BALE_BOT_TOKEN")
+    if not token:
+        reply_formatted(message, "⚠️ متغیر BALE_BOT_TOKEN در تب Environment رندر هنوز تعریف نشده است.")
+        return
+
+    bot.reply_to(message, "در حال بررسی دسترسی شبکه از رندر به دیتاسنتر بله...")
+    try:
+        res = requests.get(f"https://tapi.bale.ai/bot{token}/getMe", timeout=8)
+        reply_formatted(message, f"📡 <b>نتیجه تست اتصال به بله:</b>\n\nوضعیت: {res.status_code}\nپاسخ سرور:\n<code>{res.text}</code>")
+    except Exception as e:
+        reply_formatted(message, f"❌ <b>خطا در اتصال به بله از سرور رندر:</b>\n{e}")
 
 @bot.message_handler(commands=['testweb'])
 def test_web(message):
@@ -274,9 +297,9 @@ def test_web(message):
     bot.send_chat_action(message.chat.id, 'typing')
     data = fetch_web_context(query)
     if data:
-        reply_formatted(message, f"🔍 <b>داده‌های واکشی‌شده از وب:</b>\n\n{data[:2000]}")
+        reply_formatted(message, f"🔍 <b>داده‌های وب:</b>\n\n{data[:2000]}")
     else:
-        reply_formatted(message, "❌ موتور جستجو نتیجه‌ای نیاورد.")
+        reply_formatted(message, "❌ موتور وب‌سرچ پاسخی برنگرداند.")
 
 @bot.message_handler(commands=['web', 'search'])
 def handle_quick_search(message):
@@ -301,29 +324,6 @@ def handle_quick_search(message):
     except Exception as e:
         reply_formatted(message, f"خطا: {e}")
 
-@bot.message_handler(commands=['clear'])
-def clear_history(message):
-    if not is_authorized(message.from_user.id):
-        return
-    chat_memory[message.chat.id] = []
-    reply_formatted(message, "حافظه مکالمه جاری کاملاً پاک شد.")
-
-@bot.message_handler(commands=['memory_on'])
-def enable_memory(message):
-    if not is_authorized(message.from_user.id):
-        return
-    memory_status[message.chat.id] = True
-    reply_formatted(message, "✅ حافظه فعال شد.")
-
-@bot.message_handler(commands=['memory_off'])
-def disable_memory(message):
-    if not is_authorized(message.from_user.id):
-        return
-    memory_status[message.chat.id] = False
-    chat_memory[message.chat.id] = []
-    reply_formatted(message, "❌ حافظه غیرفعال شد.")
-
-# ۷. مدیریت پیام‌های عمومی
 @bot.message_handler(func=lambda message: True)
 def handle_chat(message):
     if not is_authorized(message.from_user.id):
@@ -343,10 +343,8 @@ def handle_chat(message):
             sys_prompt += f"\n\n{EXAM_SYSTEM_PROMPT}"
         sys_prompt += f"\nزمان فعلی سرور: {current_time}"
 
-        # مسیر Gemini متصل به وب با فیلتر هوشمند
         if selected_model == MODEL_GEMINI:
             web_info = ""
-            # فقط در صورت تشخیص نیاز واقعی، سهمیه Tavily مصرف می‌شود
             if should_search_web(user_text):
                 web_info = fetch_web_context(user_text)
 
@@ -378,7 +376,6 @@ def handle_chat(message):
 
             reply_formatted(message, ans)
 
-        # مسیر مدل‌های Groq (Fast و Smart)
         else:
             if is_mem:
                 if chat_id not in chat_memory:
@@ -407,5 +404,5 @@ def handle_chat(message):
         print(f"Chat Error: {e}")
         reply_formatted(message, "در پردازش مشکلی رخ داد؛ لطفاً دوباره تلاش کنید.")
 
-print("ربات با فیلتر هوشمند وب‌سرچ و صرفه‌جویی سهمیه آماده به کار است...")
+print("ربات با ابزار تست اتصال بله آماده است...")
 bot.infinity_polling()
