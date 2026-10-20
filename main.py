@@ -14,7 +14,7 @@ from google import genai
 from google.genai import types
 
 # ==========================================
-# ۱. وب‌سرور سبک برای پایدار ماندن در رندر
+# ۱. وب‌سرور سبک برای زنده نگه‌داشتن سرویس در رندر
 # ==========================================
 app = Flask(__name__)
 
@@ -48,10 +48,15 @@ MODEL_FAST = "qwen/qwen3.8-27b"
 MODEL_SMART = "openai/gpt-oss-120b"
 MODEL_GEMINI = "gemini-3.5-flash-lite"
 
+# متغیرهای ذخیره وضعیت تلگرام
 chat_memory = {}
 memory_status = {}
 user_model = {}
 exam_mode_status = {}
+
+# متغیرهای ذخیره وضعیت بله
+bale_chat_memory = {}
+bale_user_model = {}
 
 def is_authorized(user_id):
     if not ALLOWED_USERS:
@@ -157,14 +162,12 @@ def fetch_web_context(query):
     return "\n".join(snippets)
 
 # ==========================================
-# ۵. موتور پردازشگر مرکزی (مشترک بین تلگرام و بله)
+# ۵. موتور پردازشگر مرکزی هوش مصنوعی
 # ==========================================
 def process_ai_query(user_text, model_name=MODEL_FAST, use_memory=False, history_list=None):
-    """تابع مرکزی تولید پاسخ هوش مصنوعی قابل استفاده برای هر دو پلتفرم"""
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M")
     sys_prompt = f"{BASE_SYSTEM_PROMPT}\nزمان فعلی سرور: {current_time}"
 
-    # اگر روی مدل جمینای باشد
     if model_name == MODEL_GEMINI and gemini_client:
         web_info = fetch_web_context(user_text) if should_search_web(user_text) else ""
         enriched = f"{user_text}\n\n[داده‌های زنده وب]:\n{web_info}" if web_info else user_text
@@ -185,8 +188,8 @@ def process_ai_query(user_text, model_name=MODEL_FAST, use_memory=False, history
         )
         return resp.text.strip()
 
-    # حالت پیش‌فرض: Groq
     if groq_client:
+        max_tok = 1500 if model_name == MODEL_SMART else 800
         if use_memory and history_list:
             messages = [{"role": "system", "content": sys_prompt}] + history_list + [{"role": "user", "content": user_text}]
         else:
@@ -196,7 +199,7 @@ def process_ai_query(user_text, model_name=MODEL_FAST, use_memory=False, history
             model=model_name,
             messages=messages,
             temperature=0.2,
-            max_tokens=800
+            max_tokens=max_tok
         )
         return resp.choices[0].message.content.strip()
 
@@ -261,6 +264,41 @@ def clear_history(message):
     chat_memory[message.chat.id] = []
     reply_formatted(message, "حافظه مکالمه پاک شد.")
 
+@bot.message_handler(commands=['testweb'])
+def test_web(message):
+    if not is_authorized(message.from_user.id):
+        return
+    query = message.text.replace('/testweb', '').strip() or "قیمت دلار"
+    bot.send_chat_action(message.chat.id, 'typing')
+    data = fetch_web_context(query)
+    if data:
+        reply_formatted(message, f"🔍 <b>داده‌های وب:</b>\n\n{data[:2000]}")
+    else:
+        reply_formatted(message, "❌ موتور وب‌سرچ پاسخی برنگرداند.")
+
+@bot.message_handler(commands=['web', 'search'])
+def handle_quick_search(message):
+    if not is_authorized(message.from_user.id):
+        return
+    query = message.text.replace('/web', '').replace('/search', '').strip()
+    if not query:
+        reply_formatted(message, "لطفاً عبارت مد نظر را بنویسید.")
+        return
+
+    bot.send_chat_action(message.chat.id, 'typing')
+    web_data = fetch_web_context(query)
+    prompt = f"پرسش کاربر: {query}\n\n[داده‌های زنده وب]:\n{web_data}" if web_data else query
+    
+    try:
+        response = gemini_client.models.generate_content(
+            model=MODEL_GEMINI,
+            contents=prompt,
+            config=types.GenerateContentConfig(system_instruction=BASE_SYSTEM_PROMPT, temperature=0.2)
+        )
+        reply_formatted(message, response.text)
+    except Exception as e:
+        reply_formatted(message, f"خطا: {e}")
+
 @bot.message_handler(func=lambda message: True)
 def handle_telegram_chat(message):
     if not is_authorized(message.from_user.id):
@@ -283,10 +321,7 @@ def handle_telegram_chat(message):
         reply_formatted(message, f"خطا در پردازش: {e}")
 
 # ==========================================
-# ۷. بخش پیام‌رسان بله (اجرا روی Worker مستقل)
-# ==========================================
-# ==========================================
-# ۷. بخش پیام‌رسان بله (همراه با قفل امنیتی آیدی)
+# ۷. بخش پیام‌رسان بله (همراه با مدیریت کامل دستورات و قفل امنیتی)
 # ==========================================
 def run_bale_listener():
     if not BALE_BOT_TOKEN:
@@ -316,26 +351,69 @@ def run_bale_listener():
                     msg = update.get("message", {})
                     chat_id = msg.get("chat", {}).get("id")
                     from_user_id = msg.get("from", {}).get("id", chat_id)
-                    user_text = msg.get("text")
+                    user_text = msg.get("text", "").strip()
 
-                    if chat_id and user_text:
-                        # بررسی قفل آیدی مجاز
-                        if ALLOWED_USERS and (from_user_id not in ALLOWED_USERS and chat_id not in ALLOWED_USERS):
-                            unauth_msg = f"⛔️ دسترسی غیرمجاز!\nشناسه اکانت بله شما: {from_user_id}\nاین شناسه را در ALLOWED_USERS رندر وارد کنید."
-                            requests.post(
-                                f"{base_bale_url}/sendMessage",
-                                json={"chat_id": chat_id, "text": unauth_msg},
-                                timeout=10
-                            )
-                            continue
+                    if not chat_id or not user_text:
+                        continue
 
-                        # اگر مجاز بود، هوش مصنوعی پاسخ می‌دهد
-                        answer = process_ai_query(user_text, model_name=MODEL_GEMINI, use_memory=False)
-                        requests.post(
-                            f"{base_bale_url}/sendMessage",
-                            json={"chat_id": chat_id, "text": answer},
-                            timeout=10
+                    # بررسی دسترسی امنیتی کاربر در بله
+                    if ALLOWED_USERS and (from_user_id not in ALLOWED_USERS and chat_id not in ALLOWED_USERS):
+                        unauth_msg = f"⛔️ دسترسی غیرمجاز!\nشناسه عددی بله شما: {from_user_id}"
+                        requests.post(f"{base_bale_url}/sendMessage", json={"chat_id": chat_id, "text": unauth_msg}, timeout=10)
+                        continue
+
+                    # تنظیم وضعیت اولیه کاربر بله
+                    bale_user_model.setdefault(chat_id, MODEL_FAST)
+                    bale_chat_memory.setdefault(chat_id, [])
+
+                    # مدیریت دستورات در پیام‌رسان بله
+                    if user_text == '/start':
+                        welcome = (
+                            f"سلام! دستیار هوش مصنوعی در بله آماده است.\n"
+                            f"موتور فعال: {bale_user_model[chat_id]}\n\n"
+                            f"دستورات:\n"
+                            f"• /fast : مدل فوق‌سریع Qwen\n"
+                            f"• /smart : مدل فوق‌هوشمند (120B)\n"
+                            f"• /gemini : مدل Gemini متصل به وب\n"
+                            f"• /clear : پاکسازی حافظه گفتگو"
                         )
+                        requests.post(f"{base_bale_url}/sendMessage", json={"chat_id": chat_id, "text": welcome}, timeout=10)
+                        continue
+
+                    elif user_text == '/fast':
+                        bale_user_model[chat_id] = MODEL_FAST
+                        requests.post(f"{base_bale_url}/sendMessage", json={"chat_id": chat_id, "text": "⚡️ مدل فوق‌سریع Qwen در بله فعال شد."}, timeout=10)
+                        continue
+
+                    elif user_text == '/smart':
+                        bale_user_model[chat_id] = MODEL_SMART
+                        requests.post(f"{base_bale_url}/sendMessage", json={"chat_id": chat_id, "text": "🧠 مدل فوق‌هوشمند (120B) در بله فعال شد."}, timeout=10)
+                        continue
+
+                    elif user_text == '/gemini':
+                        bale_user_model[chat_id] = MODEL_GEMINI
+                        requests.post(f"{base_bale_url}/sendMessage", json={"chat_id": chat_id, "text": "🌐 مدل Gemini متصل به وب در بله فعال شد."}, timeout=10)
+                        continue
+
+                    elif user_text == '/clear':
+                        bale_chat_memory[chat_id] = []
+                        requests.post(f"{base_bale_url}/sendMessage", json={"chat_id": chat_id, "text": "حافظه مکالمه در بله پاک شد."}, timeout=10)
+                        continue
+
+                    # پاسخ‌دهی هوش مصنوعی با مدل انتخابی و حافظه مکالمه
+                    current_model = bale_user_model[chat_id]
+                    history = bale_chat_memory[chat_id]
+
+                    answer = process_ai_query(user_text, model_name=current_model, use_memory=True, history_list=history)
+
+                    # ذخیره در حافظه مکالمه بله
+                    bale_chat_memory[chat_id].append({"role": "user", "content": user_text})
+                    bale_chat_memory[chat_id].append({"role": "assistant", "content": answer})
+                    if len(bale_chat_memory[chat_id]) > 10:
+                        bale_chat_memory[chat_id] = bale_chat_memory[chat_id][-10:]
+
+                    requests.post(f"{base_bale_url}/sendMessage", json={"chat_id": chat_id, "text": answer}, timeout=10)
+
             time.sleep(0.5)
         except Exception as e:
             time.sleep(2)
@@ -344,7 +422,7 @@ def run_bale_listener():
 threading.Thread(target=run_bale_listener, daemon=True).start()
 
 # ==========================================
-# ۸. روشن نگه‌داشتن بات تلگرام روی Thread اصلی
+# ۸. اجرای بات تلگرام روی Thread اصلی
 # ==========================================
 print("ربات دوگانه (تلگرام + بله) فعال شد...")
 bot.infinity_polling()
