@@ -240,11 +240,30 @@ def send_welcome(message):
     if not is_authorized(message.from_user.id):
         return
     chat_id = message.chat.id
-    chat_memory[chat_id] = []
+    chat_memory.setdefault(chat_id, [])
     memory_status.setdefault(chat_id, True)
     user_model.setdefault(chat_id, MODEL_FAST)
     exam_mode_status.setdefault(chat_id, False)
-    reply_formatted(message, f"سلام! دستیار دوگانه (تلگرام + بله) فعال است.\n\n" + HELP_TEXT)
+
+    mem_state = "✅ روشن" if memory_status[chat_id] else "❌ خاموش"
+    exam_state = "🎯 فعال" if exam_mode_status[chat_id] else "⚪️ غیرفعال"
+
+    welcome_text = (
+        f"سلام! دستیار هوش مصنوعی در تلگرام آماده است.\n\n"
+        f"⚙️ <b>موتور فعال:</b> <code>{user_model[chat_id]}</code>\n"
+        f"💾 <b>وضعیت حافظه:</b> {mem_state}\n"
+        f"🎯 <b>حالت آزمون:</b> {exam_state}\n\n"
+        f"<b>دستورات:</b>\n"
+        f"• /fast : فوق‌سریع Qwen\n"
+        f"• /smart : فوق‌هوشمند (120B)\n"
+        f"• /gemini : مدل Gemini متصل به وب\n"
+        f"• /exam_on : فعال‌سازی حل آزمون زبان\n"
+        f"• /exam_off : غیرفعال‌سازی آزمون زبان\n"
+        f"• /memory_on : روشن کردن حافظه\n"
+        f"• /memory_off : خاموش کردن حافظه\n"
+        f"• /clear : پاکسازی سابقه مکالمه"
+    )
+    reply_formatted(message, welcome_text)
 
 @bot.message_handler(commands=['help'])
 def send_help(message):
