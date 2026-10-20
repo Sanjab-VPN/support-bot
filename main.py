@@ -48,15 +48,17 @@ MODEL_FAST = "qwen/qwen3.8-27b"
 MODEL_SMART = "openai/gpt-oss-120b"
 MODEL_GEMINI = "gemini-3.5-flash-lite"
 
-# متغیرهای ذخیره وضعیت تلگرام
+# متغیرهای وضعیت تلگرام
 chat_memory = {}
 memory_status = {}
 user_model = {}
 exam_mode_status = {}
 
-# متغیرهای ذخیره وضعیت بله
+# متغیرهای وضعیت بله
 bale_chat_memory = {}
+bale_memory_status = {}
 bale_user_model = {}
+bale_exam_status = {}
 
 def is_authorized(user_id):
     if not ALLOWED_USERS:
@@ -90,6 +92,10 @@ HELP_TEXT = """
 • /fast : فوق‌سریع Qwen
 • /smart : فوق‌هوشمند 120B
 • /gemini : مدل Gemini متصل به وب زنده
+
+<b>حالت آزمون زبان:</b>
+• /exam_on : فعال‌سازی حل سریع و تک‌گزینه‌ای تست
+• /exam_off : غیرفعال‌سازی حالت آزمون
 
 <b>ابزارهای وب:</b>
 • <code>/web متن</code> : استعلام فوری از وب
@@ -162,18 +168,25 @@ def fetch_web_context(query):
     return "\n".join(snippets)
 
 # ==========================================
-# ۵. موتور پردازشگر مرکزی هوش مصنوعی
+# ۵. موتور پردازشگر مرکزی هوش مصنوعی (همراه با حالت آزمون)
 # ==========================================
-def process_ai_query(user_text, model_name=MODEL_FAST, use_memory=False, history_list=None):
+def process_ai_query(user_text, model_name=MODEL_FAST, use_memory=False, history_list=None, is_exam=False):
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M")
-    sys_prompt = f"{BASE_SYSTEM_PROMPT}\nزمان فعلی سرور: {current_time}"
+    sys_prompt = BASE_SYSTEM_PROMPT
+    if is_exam:
+        sys_prompt += f"\n\n{EXAM_SYSTEM_PROMPT}"
+    sys_prompt += f"\nزمان فعلی سرور: {current_time}"
 
+    # اگر حالت آزمون باشد یا مدل روی جمینای تنظیم شده باشد
     if model_name == MODEL_GEMINI and gemini_client:
-        web_info = fetch_web_context(user_text) if should_search_web(user_text) else ""
+        web_info = ""
+        if not is_exam and should_search_web(user_text):
+            web_info = fetch_web_context(user_text)
+
         enriched = f"{user_text}\n\n[داده‌های زنده وب]:\n{web_info}" if web_info else user_text
         
         contents = []
-        if use_memory and history_list:
+        if use_memory and history_list and not is_exam:
             for item in history_list:
                 role = "user" if item["role"] == "user" else "model"
                 contents.append({"role": role, "parts": [{"text": item["content"]}]})
@@ -184,13 +197,14 @@ def process_ai_query(user_text, model_name=MODEL_FAST, use_memory=False, history
         resp = gemini_client.models.generate_content(
             model=MODEL_GEMINI,
             contents=contents,
-            config=types.GenerateContentConfig(system_instruction=sys_prompt, temperature=0.2)
+            config=types.GenerateContentConfig(system_instruction=sys_prompt, temperature=0.1 if is_exam else 0.2)
         )
         return resp.text.strip()
 
+    # حالت مدل‌های Groq
     if groq_client:
-        max_tok = 1500 if model_name == MODEL_SMART else 800
-        if use_memory and history_list:
+        max_tok = 300 if is_exam else (1500 if model_name == MODEL_SMART else 800)
+        if use_memory and history_list and not is_exam:
             messages = [{"role": "system", "content": sys_prompt}] + history_list + [{"role": "user", "content": user_text}]
         else:
             messages = [{"role": "system", "content": sys_prompt}, {"role": "user", "content": user_text}]
@@ -198,7 +212,7 @@ def process_ai_query(user_text, model_name=MODEL_FAST, use_memory=False, history
         resp = groq_client.chat.completions.create(
             model=model_name,
             messages=messages,
-            temperature=0.2,
+            temperature=0.1 if is_exam else 0.2,
             max_tokens=max_tok
         )
         return resp.choices[0].message.content.strip()
@@ -206,7 +220,7 @@ def process_ai_query(user_text, model_name=MODEL_FAST, use_memory=False, history
     return "سرویس‌های هوش مصنوعی پیکربندی نشده‌اند."
 
 # ==========================================
-# ۶. بخش تلگرام
+# ۶. بخش پلتفرم تلگرام
 # ==========================================
 def reply_formatted(message, text):
     if not text or not text.strip():
@@ -227,7 +241,9 @@ def send_welcome(message):
         return
     chat_id = message.chat.id
     chat_memory[chat_id] = []
+    memory_status.setdefault(chat_id, True)
     user_model.setdefault(chat_id, MODEL_FAST)
+    exam_mode_status.setdefault(chat_id, False)
     reply_formatted(message, f"سلام! دستیار دوگانه (تلگرام + بله) فعال است.\n\n" + HELP_TEXT)
 
 @bot.message_handler(commands=['help'])
@@ -256,6 +272,35 @@ def switch_gemini(message):
         return
     user_model[message.chat.id] = MODEL_GEMINI
     reply_formatted(message, "🌐 <b>مدل Gemini متصل به وب فعال شد.</b>")
+
+@bot.message_handler(commands=['exam_on'])
+def enable_exam_tg(message):
+    if not is_authorized(message.from_user.id):
+        return
+    exam_mode_status[message.chat.id] = True
+    reply_formatted(message, "🎯 <b>حالت آزمون زبان در تلگرام فعال شد.</b> پاسخ‌ها تک‌گزینه‌ای خواهند بود.")
+
+@bot.message_handler(commands=['exam_off'])
+def disable_exam_tg(message):
+    if not is_authorized(message.from_user.id):
+        return
+    exam_mode_status[message.chat.id] = False
+    reply_formatted(message, "⚪️ <b>حالت آزمون زبان غیرفعال شد.</b>")
+
+@bot.message_handler(commands=['memory_on'])
+def enable_mem_tg(message):
+    if not is_authorized(message.from_user.id):
+        return
+    memory_status[message.chat.id] = True
+    reply_formatted(message, "✅ حافظه فعال شد.")
+
+@bot.message_handler(commands=['memory_off'])
+def disable_mem_tg(message):
+    if not is_authorized(message.from_user.id):
+        return
+    memory_status[message.chat.id] = False
+    chat_memory[message.chat.id] = []
+    reply_formatted(message, "❌ حافظه غیرفعال شد.")
 
 @bot.message_handler(commands=['clear'])
 def clear_history(message):
@@ -306,22 +351,31 @@ def handle_telegram_chat(message):
     chat_id = message.chat.id
     bot.send_chat_action(chat_id, 'typing')
     selected_model = user_model.get(chat_id, MODEL_FAST)
+    is_mem = memory_status.get(chat_id, True)
+    is_exam = exam_mode_status.get(chat_id, False)
     history = chat_memory.get(chat_id, [])
 
     try:
-        ans = process_ai_query(message.text, model_name=selected_model, use_memory=True, history_list=history)
-        if chat_id not in chat_memory:
-            chat_memory[chat_id] = []
-        chat_memory[chat_id].append({"role": "user", "content": message.text})
-        chat_memory[chat_id].append({"role": "assistant", "content": ans})
-        if len(chat_memory[chat_id]) > 10:
-            chat_memory[chat_id] = chat_memory[chat_id][-10:]
+        ans = process_ai_query(
+            message.text, 
+            model_name=selected_model, 
+            use_memory=is_mem, 
+            history_list=history, 
+            is_exam=is_exam
+        )
+        if is_mem and not is_exam:
+            if chat_id not in chat_memory:
+                chat_memory[chat_id] = []
+            chat_memory[chat_id].append({"role": "user", "content": message.text})
+            chat_memory[chat_id].append({"role": "assistant", "content": ans})
+            if len(chat_memory[chat_id]) > 10:
+                chat_memory[chat_id] = chat_memory[chat_id][-10:]
         reply_formatted(message, ans)
     except Exception as e:
         reply_formatted(message, f"خطا در پردازش: {e}")
 
 # ==========================================
-# ۷. بخش پیام‌رسان بله (همراه با مدیریت کامل دستورات و قفل امنیتی)
+# ۷. بخش پلتفرم پیام‌رسان بله
 # ==========================================
 def run_bale_listener():
     if not BALE_BOT_TOKEN:
@@ -356,61 +410,100 @@ def run_bale_listener():
                     if not chat_id or not user_text:
                         continue
 
-                    # بررسی دسترسی امنیتی کاربر در بله
+                    # بررسی دسترسی کاربر
                     if ALLOWED_USERS and (from_user_id not in ALLOWED_USERS and chat_id not in ALLOWED_USERS):
                         unauth_msg = f"⛔️ دسترسی غیرمجاز!\nشناسه عددی بله شما: {from_user_id}"
                         requests.post(f"{base_bale_url}/sendMessage", json={"chat_id": chat_id, "text": unauth_msg}, timeout=10)
                         continue
 
-                    # تنظیم وضعیت اولیه کاربر بله
+                    # پیش‌فرض‌های کاربر بله
                     bale_user_model.setdefault(chat_id, MODEL_FAST)
                     bale_chat_memory.setdefault(chat_id, [])
+                    bale_memory_status.setdefault(chat_id, True)
+                    bale_exam_status.setdefault(chat_id, False)
 
-                    # مدیریت دستورات در پیام‌رسان بله
+                    # دستورات اختصاصی بله
                     if user_text == '/start':
+                        mem_state = "✅ روشن" if bale_memory_status[chat_id] else "❌ خاموش"
+                        exam_state = "🎯 فعال" if bale_exam_status[chat_id] else "⚪️ غیرفعال"
                         welcome = (
                             f"سلام! دستیار هوش مصنوعی در بله آماده است.\n"
-                            f"موتور فعال: {bale_user_model[chat_id]}\n\n"
+                            f"موتور فعال: {bale_user_model[chat_id]}\n"
+                            f"وضعیت حافظه: {mem_state}\n"
+                            f"حالت آزمون: {exam_state}\n\n"
                             f"دستورات:\n"
-                            f"• /fast : مدل فوق‌سریع Qwen\n"
-                            f"• /smart : مدل فوق‌هوشمند (120B)\n"
+                            f"• /fast : فوق‌سریع Qwen\n"
+                            f"• /smart : فوق‌هوشمند (120B)\n"
                             f"• /gemini : مدل Gemini متصل به وب\n"
-                            f"• /clear : پاکسازی حافظه گفتگو"
+                            f"• /exam_on : فعال‌سازی حل آزمون زبان\n"
+                            f"• /exam_off : غیرفعال‌سازی آزمون زبان\n"
+                            f"• /memory_on : روشن کردن حافظه\n"
+                            f"• /memory_off : خاموش کردن حافظه\n"
+                            f"• /clear : پاکسازی تاریخچه مکالمه"
                         )
                         requests.post(f"{base_bale_url}/sendMessage", json={"chat_id": chat_id, "text": welcome}, timeout=10)
                         continue
 
                     elif user_text == '/fast':
                         bale_user_model[chat_id] = MODEL_FAST
-                        requests.post(f"{base_bale_url}/sendMessage", json={"chat_id": chat_id, "text": "⚡️ مدل فوق‌سریع Qwen در بله فعال شد."}, timeout=10)
+                        requests.post(f"{base_bale_url}/sendMessage", json={"chat_id": chat_id, "text": "⚡️ مدل فوق‌سریع Qwen فعال شد."}, timeout=10)
                         continue
 
                     elif user_text == '/smart':
                         bale_user_model[chat_id] = MODEL_SMART
-                        requests.post(f"{base_bale_url}/sendMessage", json={"chat_id": chat_id, "text": "🧠 مدل فوق‌هوشمند (120B) در بله فعال شد."}, timeout=10)
+                        requests.post(f"{base_bale_url}/sendMessage", json={"chat_id": chat_id, "text": "🧠 مدل فوق‌هوشمند (120B) فعال شد."}, timeout=10)
                         continue
 
                     elif user_text == '/gemini':
                         bale_user_model[chat_id] = MODEL_GEMINI
-                        requests.post(f"{base_bale_url}/sendMessage", json={"chat_id": chat_id, "text": "🌐 مدل Gemini متصل به وب در بله فعال شد."}, timeout=10)
+                        requests.post(f"{base_bale_url}/sendMessage", json={"chat_id": chat_id, "text": "🌐 مدل Gemini متصل به وب فعال شد."}, timeout=10)
+                        continue
+
+                    elif user_text == '/exam_on':
+                        bale_exam_status[chat_id] = True
+                        requests.post(f"{base_bale_url}/sendMessage", json={"chat_id": chat_id, "text": "🎯 حالت آزمون زبان فعال شد. پاسخ‌ها تک‌گزینه‌ای خواهند بود."}, timeout=10)
+                        continue
+
+                    elif user_text == '/exam_off':
+                        bale_exam_status[chat_id] = False
+                        requests.post(f"{base_bale_url}/sendMessage", json={"chat_id": chat_id, "text": "⚪️ حالت آزمون زبان غیرفعال شد."}, timeout=10)
+                        continue
+
+                    elif user_text == '/memory_on':
+                        bale_memory_status[chat_id] = True
+                        requests.post(f"{base_bale_url}/sendMessage", json={"chat_id": chat_id, "text": "✅ حافظه مکالمه در بله روشن شد."}, timeout=10)
+                        continue
+
+                    elif user_text == '/memory_off':
+                        bale_memory_status[chat_id] = False
+                        bale_chat_memory[chat_id] = []
+                        requests.post(f"{base_bale_url}/sendMessage", json={"chat_id": chat_id, "text": "❌ حافظه خاموش و سابقه گفتگو پاک شد."}, timeout=10)
                         continue
 
                     elif user_text == '/clear':
                         bale_chat_memory[chat_id] = []
-                        requests.post(f"{base_bale_url}/sendMessage", json={"chat_id": chat_id, "text": "حافظه مکالمه در بله پاک شد."}, timeout=10)
+                        requests.post(f"{base_bale_url}/sendMessage", json={"chat_id": chat_id, "text": "حافظه مکالمه پاک شد."}, timeout=10)
                         continue
 
-                    # پاسخ‌دهی هوش مصنوعی با مدل انتخابی و حافظه مکالمه
+                    # پاسخ‌دهی به متن کاربر با لحاظ وضعیت‌های انتخابی
                     current_model = bale_user_model[chat_id]
-                    history = bale_chat_memory[chat_id]
+                    is_mem = bale_memory_status.get(chat_id, True)
+                    is_exam = bale_exam_status.get(chat_id, False)
+                    history = bale_chat_memory[chat_id] if is_mem else []
 
-                    answer = process_ai_query(user_text, model_name=current_model, use_memory=True, history_list=history)
+                    answer = process_ai_query(
+                        user_text, 
+                        model_name=current_model, 
+                        use_memory=is_mem, 
+                        history_list=history, 
+                        is_exam=is_exam
+                    )
 
-                    # ذخیره در حافظه مکالمه بله
-                    bale_chat_memory[chat_id].append({"role": "user", "content": user_text})
-                    bale_chat_memory[chat_id].append({"role": "assistant", "content": answer})
-                    if len(bale_chat_memory[chat_id]) > 10:
-                        bale_chat_memory[chat_id] = bale_chat_memory[chat_id][-10:]
+                    if is_mem and not is_exam:
+                        bale_chat_memory[chat_id].append({"role": "user", "content": user_text})
+                        bale_chat_memory[chat_id].append({"role": "assistant", "content": answer})
+                        if len(bale_chat_memory[chat_id]) > 10:
+                            bale_chat_memory[chat_id] = bale_chat_memory[chat_id][-10:]
 
                     requests.post(f"{base_bale_url}/sendMessage", json={"chat_id": chat_id, "text": answer}, timeout=10)
 
@@ -418,11 +511,11 @@ def run_bale_listener():
         except Exception as e:
             time.sleep(2)
 
-# اجرای بازوی بله در پس‌زمینه
+# اجرای موازی بخش بله در پس‌زمینه
 threading.Thread(target=run_bale_listener, daemon=True).start()
 
 # ==========================================
 # ۸. اجرای بات تلگرام روی Thread اصلی
 # ==========================================
-print("ربات دوگانه (تلگرام + بله) فعال شد...")
+print("ربات دوگانه (تلگرام + بله) با پشتیبانی از حالت آزمون فعال شد...")
 bot.infinity_polling()
