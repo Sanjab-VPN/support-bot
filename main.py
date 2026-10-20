@@ -1008,7 +1008,9 @@ def answer_bale(base_url, chat_id, user_text, image=None, memory_text=None):
 
 def handle_bale_voice(base_url, chat_id, voice):
     duration = voice.get("duration") or 0
-    if duration > MAX_AUDIO_SECONDS:
+    # تبدیل میلی‌ثانیه بله به ثانیه (اگر مقدار بزرگتر از ۱۰۰۰ بود)
+    duration_sec = duration / 1000 if duration > 1000 else duration
+    if duration_sec > MAX_AUDIO_SECONDS:
         bale_send(base_url, chat_id, f"⏱️ پیام صوتی بیش از {MAX_AUDIO_SECONDS // 60} دقیقه است؛ لطفاً کوتاه‌تر بفرستید.")
         return
     try:
@@ -1024,6 +1026,7 @@ def handle_bale_voice(base_url, chat_id, voice):
 
     bale_send(base_url, chat_id, f"🎙️ متن شنیده‌شده:\n{text}")
     answer_bale(base_url, chat_id, text)
+    
 
 def handle_bale_photo(base_url, chat_id, photos, caption):
     if not gemini_client:
