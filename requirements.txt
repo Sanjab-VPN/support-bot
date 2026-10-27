@@ -1,7 +1,0 @@
-Flask
-pyTelegramBotAPI
-groq
-google-genai
-ddgs
-requests
-tavily-python
